@@ -1,7 +1,7 @@
 package server
 
 import (
-	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/itsChris/wgpilot/internal/auth"
@@ -31,7 +31,6 @@ type setupRequest struct {
 
 // handleLogin authenticates a user and issues a session cookie.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	// Rate limit check.
 	ip := r.RemoteAddr
 	if !s.rateLimiter.Allow(ip) {
 		s.logger.Warn("auth_rate_limited",
@@ -39,18 +38,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"component", "auth",
 		)
 		w.Header().Set("Retry-After", "60")
-		s.writeError(w, r, "too many login attempts", apperr.ErrRateLimited, http.StatusTooManyRequests)
+		writeError(w, r, fmt.Errorf("too many login attempts"), apperr.ErrRateLimited, http.StatusTooManyRequests, s.devMode)
 		return
 	}
 
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, r, "invalid request body", apperr.ErrValidation, http.StatusBadRequest)
+	if code, status, err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err, code, status, s.devMode)
 		return
 	}
 
 	if req.Username == "" || req.Password == "" {
-		s.writeError(w, r, "username and password required", apperr.ErrValidation, http.StatusBadRequest)
+		writeError(w, r, fmt.Errorf("username and password required"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
 		return
 	}
 
@@ -60,7 +59,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 	if user == nil {
@@ -70,7 +69,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"reason", "user_not_found",
 			"component", "auth",
 		)
-		s.writeError(w, r, "invalid credentials", apperr.ErrInvalidCredentials, http.StatusUnauthorized)
+		writeError(w, r, fmt.Errorf("invalid credentials"), apperr.ErrInvalidCredentials, http.StatusUnauthorized, s.devMode)
 		return
 	}
 
@@ -81,7 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"reason", "invalid_password",
 			"component", "auth",
 		)
-		s.writeError(w, r, "invalid credentials", apperr.ErrInvalidCredentials, http.StatusUnauthorized)
+		writeError(w, r, fmt.Errorf("invalid credentials"), apperr.ErrInvalidCredentials, http.StatusUnauthorized, s.devMode)
 		return
 	}
 
@@ -91,7 +90,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 
@@ -112,49 +111,47 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Check if setup is already complete.
 	complete, err := s.db.GetSetting(ctx, "setup_complete")
 	if err != nil {
 		s.logger.Error("setup_check_failed",
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 	if complete == "true" {
-		s.writeError(w, r, "setup already completed", apperr.ErrSetupComplete, http.StatusConflict)
+		writeError(w, r, fmt.Errorf("setup already completed"), apperr.ErrSetupComplete, http.StatusConflict, s.devMode)
 		return
 	}
 
 	var req setupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, r, "invalid request body", apperr.ErrValidation, http.StatusBadRequest)
+	if code, status, err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err, code, status, s.devMode)
 		return
 	}
 
 	if req.OTP == "" || req.Username == "" || req.Password == "" {
-		s.writeError(w, r, "otp, username, and password required", apperr.ErrValidation, http.StatusBadRequest)
+		writeError(w, r, fmt.Errorf("otp, username, and password required"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
 		return
 	}
 
 	if len(req.Password) < auth.MinPasswordLength {
-		s.writeError(w, r, "password must be at least 10 characters", apperr.ErrValidation, http.StatusBadRequest)
+		writeError(w, r, fmt.Errorf("password must be at least 10 characters"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
 		return
 	}
 
-	// Verify OTP against stored hash.
 	otpHash, err := s.db.GetSetting(ctx, "setup_otp")
 	if err != nil {
 		s.logger.Error("setup_otp_read_failed",
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 	if otpHash == "" {
-		s.writeError(w, r, "setup already completed", apperr.ErrSetupComplete, http.StatusConflict)
+		writeError(w, r, fmt.Errorf("setup already completed"), apperr.ErrSetupComplete, http.StatusConflict, s.devMode)
 		return
 	}
 
@@ -163,18 +160,17 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			"remote_addr", r.RemoteAddr,
 			"component", "auth",
 		)
-		s.writeError(w, r, "invalid setup password", apperr.ErrInvalidOTP, http.StatusUnauthorized)
+		writeError(w, r, fmt.Errorf("invalid setup password"), apperr.ErrInvalidOTP, http.StatusUnauthorized, s.devMode)
 		return
 	}
 
-	// Hash the new password and create the admin user.
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		s.logger.Error("setup_hash_password_failed",
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 
@@ -188,11 +184,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 
-	// Delete OTP and mark setup complete.
 	if err := s.db.DeleteSetting(ctx, "setup_otp"); err != nil {
 		s.logger.Error("setup_delete_otp_failed",
 			"error", err,
@@ -206,14 +201,13 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// Issue JWT for the new admin.
 	token, err := s.jwtService.Generate(userID, req.Username, "admin")
 	if err != nil {
 		s.logger.Error("setup_token_generation_failed",
 			"error", err,
 			"component", "auth",
 		)
-		s.writeError(w, r, "internal error", apperr.ErrInternal, http.StatusInternalServerError)
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 
@@ -241,4 +235,20 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// handleMe returns the current authenticated user.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	claims := auth.UserFromContext(r.Context())
+	if claims == nil {
+		writeError(w, r, fmt.Errorf("unauthorized"), apperr.ErrUnauthorized, http.StatusUnauthorized, s.devMode)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": map[string]any{
+			"id":       claims.Subject,
+			"username": claims.Username,
+			"role":     claims.Role,
+		},
+	})
 }

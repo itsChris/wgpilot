@@ -3,8 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,58 +12,6 @@ import (
 	"github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/db"
 )
-
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-func testJWTSecret() []byte {
-	return []byte("test-secret-key-that-is-32-bytes!")
-}
-
-func testServer(t *testing.T) *Server {
-	t.Helper()
-	ctx := context.Background()
-	logger := discardLogger()
-
-	database, err := db.New(ctx, ":memory:", logger, true)
-	if err != nil {
-		t.Fatalf("db.New: %v", err)
-	}
-	if err := db.Migrate(ctx, database, logger); err != nil {
-		t.Fatalf("db.Migrate: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-
-	jwtSvc, err := auth.NewJWTService(testJWTSecret(), 24*time.Hour, logger)
-	if err != nil {
-		t.Fatalf("NewJWTService: %v", err)
-	}
-
-	sessions, err := auth.NewSessionManager(false, logger)
-	if err != nil {
-		t.Fatalf("NewSessionManager: %v", err)
-	}
-
-	limiter, err := auth.NewLoginRateLimiter(5, time.Minute)
-	if err != nil {
-		t.Fatalf("NewLoginRateLimiter: %v", err)
-	}
-	t.Cleanup(func() { limiter.Stop() })
-
-	srv, err := New(Config{
-		DB:          database,
-		Logger:      logger,
-		JWTService:  jwtSvc,
-		Sessions:    sessions,
-		RateLimiter: limiter,
-		DevMode:     true,
-	})
-	if err != nil {
-		t.Fatalf("server.New: %v", err)
-	}
-	return srv
-}
 
 func createTestUser(t *testing.T, d *db.DB, username, password string) {
 	t.Helper()
@@ -84,7 +30,7 @@ func createTestUser(t *testing.T, d *db.DB, username, password string) {
 }
 
 func TestHandleLogin_Success(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	createTestUser(t, srv.db, "admin", "correctpassword")
 
 	body := `{"username":"admin","password":"correctpassword"}`
@@ -92,7 +38,7 @@ func TestHandleLogin_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleLogin(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -137,7 +83,7 @@ func TestHandleLogin_Success(t *testing.T) {
 }
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	createTestUser(t, srv.db, "admin", "correctpassword")
 
 	body := `{"username":"admin","password":"wrongpassword"}`
@@ -145,7 +91,7 @@ func TestHandleLogin_WrongPassword(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleLogin(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
@@ -160,14 +106,14 @@ func TestHandleLogin_WrongPassword(t *testing.T) {
 }
 
 func TestHandleLogin_UserNotFound(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 
 	body := `{"username":"nonexistent","password":"anything"}`
 	req := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleLogin(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
@@ -176,7 +122,7 @@ func TestHandleLogin_UserNotFound(t *testing.T) {
 
 func TestHandleLogin_RateLimit(t *testing.T) {
 	ctx := context.Background()
-	logger := discardLogger()
+	logger := newDiscardLogger()
 
 	database, err := db.New(ctx, ":memory:", logger, true)
 	if err != nil {
@@ -187,7 +133,7 @@ func TestHandleLogin_RateLimit(t *testing.T) {
 	}
 	defer database.Close()
 
-	jwtSvc, err := auth.NewJWTService(testJWTSecret(), 24*time.Hour, logger)
+	jwtSvc, err := auth.NewJWTService(newTestJWTSecret(), 24*time.Hour, logger)
 	if err != nil {
 		t.Fatalf("NewJWTService: %v", err)
 	}
@@ -220,7 +166,7 @@ func TestHandleLogin_RateLimit(t *testing.T) {
 		req.RemoteAddr = "192.168.1.100:12345"
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		srv.handleLogin(w, req)
+		srv.ServeHTTP(w, req)
 	}
 
 	// 6th attempt should be rate limited.
@@ -229,7 +175,7 @@ func TestHandleLogin_RateLimit(t *testing.T) {
 	req.RemoteAddr = "192.168.1.100:12345"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	srv.handleLogin(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d: %s", w.Code, w.Body.String())
@@ -240,7 +186,7 @@ func TestHandleLogin_RateLimit(t *testing.T) {
 }
 
 func TestHandleSetup_Success(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	ctx := context.Background()
 
 	// Store OTP hash.
@@ -258,7 +204,7 @@ func TestHandleSetup_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleSetup(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -304,7 +250,7 @@ func TestHandleSetup_Success(t *testing.T) {
 }
 
 func TestHandleSetup_AlreadyComplete(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	ctx := context.Background()
 
 	if err := srv.db.SetSetting(ctx, "setup_complete", "true"); err != nil {
@@ -316,7 +262,7 @@ func TestHandleSetup_AlreadyComplete(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleSetup(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected 409, got %d: %s", w.Code, w.Body.String())
@@ -324,7 +270,7 @@ func TestHandleSetup_AlreadyComplete(t *testing.T) {
 }
 
 func TestHandleSetup_InvalidOTP(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	ctx := context.Background()
 
 	otpHash, err := auth.HashPassword("correct-otp")
@@ -340,7 +286,7 @@ func TestHandleSetup_InvalidOTP(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleSetup(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
@@ -348,7 +294,7 @@ func TestHandleSetup_InvalidOTP(t *testing.T) {
 }
 
 func TestHandleSetup_PasswordTooShort(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 	ctx := context.Background()
 
 	otpHash, err := auth.HashPassword("correct-otp")
@@ -364,7 +310,7 @@ func TestHandleSetup_PasswordTooShort(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	srv.handleSetup(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for short password, got %d: %s", w.Code, w.Body.String())
@@ -372,12 +318,12 @@ func TestHandleSetup_PasswordTooShort(t *testing.T) {
 }
 
 func TestHandleLogout(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 
 	req := httptest.NewRequest("POST", "/api/auth/logout", nil)
 	w := httptest.NewRecorder()
 
-	srv.handleLogout(w, req)
+	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
@@ -397,7 +343,7 @@ func TestHandleLogout(t *testing.T) {
 
 func TestExpiredJWT_ProtectedEndpoint(t *testing.T) {
 	ctx := context.Background()
-	logger := discardLogger()
+	logger := newDiscardLogger()
 
 	database, err := db.New(ctx, ":memory:", logger, true)
 	if err != nil {
@@ -409,7 +355,7 @@ func TestExpiredJWT_ProtectedEndpoint(t *testing.T) {
 	defer database.Close()
 
 	// Use nanosecond TTL so token expires immediately.
-	jwtSvc, err := auth.NewJWTService(testJWTSecret(), time.Nanosecond, logger)
+	jwtSvc, err := auth.NewJWTService(newTestJWTSecret(), time.Nanosecond, logger)
 	if err != nil {
 		t.Fatalf("NewJWTService: %v", err)
 	}
@@ -455,7 +401,7 @@ func TestExpiredJWT_ProtectedEndpoint(t *testing.T) {
 }
 
 func TestSecurityHeaders_OnAuthEndpoints(t *testing.T) {
-	srv := testServer(t)
+	srv := newTestServer(t)
 
 	req := httptest.NewRequest("POST", "/api/auth/logout", nil)
 	w := httptest.NewRecorder()
