@@ -59,6 +59,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Interface:  net.Interface,
 			Enabled:    net.Enabled,
 			ListenPort: net.ListenPort,
+			Peers:      make([]peerStatus, 0),
 		}
 
 		if !net.Enabled || s.wgManager == nil {

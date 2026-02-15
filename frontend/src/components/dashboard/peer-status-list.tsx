@@ -39,11 +39,11 @@ export function PeerStatusList() {
                 <h4 className="mb-2 text-sm font-medium text-muted-foreground">
                   {net.name} ({net.interface})
                 </h4>
-                {net.peers.length === 0 ? (
+                {(net.peers ?? []).length === 0 ? (
                   <p className="text-sm text-muted-foreground">No peers</p>
                 ) : (
                   <div className="space-y-2">
-                    {net.peers.map((peer) => (
+                    {(net.peers ?? []).map((peer) => (
                       <div
                         key={peer.peer_id}
                         className="flex items-center gap-3 rounded-md border p-3"

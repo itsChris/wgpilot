@@ -26,7 +26,7 @@ export function StatsCards() {
 
   const networks = status?.networks ?? [];
   const totalNetworks = networks.length;
-  const allPeers = networks.flatMap((n) => n.peers);
+  const allPeers = networks.flatMap((n) => n.peers ?? []);
   const totalPeers = allPeers.length;
   const onlinePeers = allPeers.filter((p) => p.online).length;
   const totalRx = allPeers.reduce((sum, p) => sum + p.transfer_rx, 0);
