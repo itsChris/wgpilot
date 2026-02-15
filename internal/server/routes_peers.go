@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/itsChris/wgpilot/internal/db"
 	apperr "github.com/itsChris/wgpilot/internal/errors"
@@ -20,6 +21,7 @@ type createPeerRequest struct {
 	Role                string `json:"role"`
 	PersistentKeepalive int    `json:"persistent_keepalive"`
 	SiteNetworks        string `json:"site_networks"`
+	ExpiresIn           string `json:"expires_in"` // duration string, e.g. "720h" for 30 days
 }
 
 type updatePeerRequest struct {
@@ -28,6 +30,7 @@ type updatePeerRequest struct {
 	Enabled             *bool   `json:"enabled"`
 	PersistentKeepalive *int    `json:"persistent_keepalive"`
 	Endpoint            *string `json:"endpoint"`
+	ExpiresIn           *string `json:"expires_in"` // duration string, empty string to clear
 }
 
 type peerResponse struct {
@@ -42,6 +45,7 @@ type peerResponse struct {
 	Role                string `json:"role"`
 	SiteNetworks        string `json:"site_networks"`
 	Enabled             bool   `json:"enabled"`
+	ExpiresAt           *int64 `json:"expires_at"`
 	CreatedAt           int64  `json:"created_at"`
 	UpdatedAt           int64  `json:"updated_at"`
 }
@@ -70,6 +74,24 @@ func isValidEndpoint(ep string) bool {
 	return true
 }
 
+func isValidEmail(email string) bool {
+	if email == "" {
+		return true // email is optional
+	}
+	if len(email) > 254 {
+		return false
+	}
+	at := strings.LastIndex(email, "@")
+	if at < 1 || at >= len(email)-1 {
+		return false
+	}
+	domain := email[at+1:]
+	if !strings.Contains(domain, ".") {
+		return false
+	}
+	return true
+}
+
 func isValidSiteNetworks(s string) bool {
 	if s == "" {
 		return true
@@ -90,6 +112,9 @@ func (s *Server) validateCreatePeer(req createPeerRequest) []fieldError {
 	if !isValidName(req.Name) {
 		errs = append(errs, fieldError{"name", "1-64 alphanumeric characters, spaces, hyphens, underscores"})
 	}
+	if !isValidEmail(req.Email) {
+		errs = append(errs, fieldError{"email", "must be a valid email address"})
+	}
 	if !isValidRole(req.Role) {
 		errs = append(errs, fieldError{"role", "must be client or site-gateway"})
 	}
@@ -106,6 +131,9 @@ func (s *Server) validateUpdatePeer(req updatePeerRequest) []fieldError {
 	var errs []fieldError
 	if req.Name != nil && !isValidName(*req.Name) {
 		errs = append(errs, fieldError{"name", "1-64 alphanumeric characters, spaces, hyphens, underscores"})
+	}
+	if req.Email != nil && !isValidEmail(*req.Email) {
+		errs = append(errs, fieldError{"email", "must be a valid email address"})
 	}
 	if req.PersistentKeepalive != nil && (*req.PersistentKeepalive < 0 || *req.PersistentKeepalive > 65535) {
 		errs = append(errs, fieldError{"persistent_keepalive", "must be between 0 and 65535"})
@@ -238,6 +266,18 @@ func (s *Server) handleCreatePeer(w http.ResponseWriter, r *http.Request) {
 		serverAllowedIPs = serverAllowedIPs + ", " + req.SiteNetworks
 	}
 
+	// Parse expiry.
+	var expiresAt *time.Time
+	if req.ExpiresIn != "" {
+		d, err := time.ParseDuration(req.ExpiresIn)
+		if err != nil {
+			writeValidationError(w, r, []fieldError{{Field: "expires_in", Message: "invalid duration format (e.g. '720h')"}})
+			return
+		}
+		t := time.Now().Add(d)
+		expiresAt = &t
+	}
+
 	peer := &db.Peer{
 		NetworkID:           networkID,
 		Name:                req.Name,
@@ -250,6 +290,7 @@ func (s *Server) handleCreatePeer(w http.ResponseWriter, r *http.Request) {
 		Role:                req.Role,
 		SiteNetworks:        req.SiteNetworks,
 		Enabled:             true,
+		ExpiresAt:           expiresAt,
 	}
 
 	// Add peer to WireGuard interface.
@@ -314,6 +355,7 @@ func (s *Server) handleCreatePeer(w http.ResponseWriter, r *http.Request) {
 		"allowed_ips", created.AllowedIPs,
 		"component", "handler",
 	)
+	s.auditf(r, "peer.created", "peer", "created peer %q (id=%d) in network %d", created.Name, peerID, networkID)
 
 	writeJSON(w, http.StatusCreated, peerToResponse(created))
 }
@@ -465,6 +507,19 @@ func (s *Server) handleUpdatePeer(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint != nil {
 		peer.Endpoint = *req.Endpoint
 	}
+	if req.ExpiresIn != nil {
+		if *req.ExpiresIn == "" {
+			peer.ExpiresAt = nil // clear expiry
+		} else {
+			d, err := time.ParseDuration(*req.ExpiresIn)
+			if err != nil {
+				writeValidationError(w, r, []fieldError{{Field: "expires_in", Message: "invalid duration format (e.g. '720h')"}})
+				return
+			}
+			t := time.Now().Add(d)
+			peer.ExpiresAt = &t
+		}
+	}
 
 	// Update WireGuard peer if manager is available.
 	if s.wgManager != nil {
@@ -522,6 +577,7 @@ func (s *Server) handleUpdatePeer(w http.ResponseWriter, r *http.Request) {
 		"network_id", networkID,
 		"component", "handler",
 	)
+	s.auditf(r, "peer.updated", "peer", "updated peer %q (id=%d) in network %d", updated.Name, peerID, networkID)
 
 	writeJSON(w, http.StatusOK, peerToResponse(updated))
 }
@@ -598,6 +654,7 @@ func (s *Server) handleDeletePeer(w http.ResponseWriter, r *http.Request) {
 		"public_key", peer.PublicKey,
 		"component", "handler",
 	)
+	s.auditf(r, "peer.deleted", "peer", "deleted peer %q (id=%d) from network %d", peer.Name, peerID, networkID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -787,10 +844,142 @@ func (s *Server) handlePeerQR(w http.ResponseWriter, r *http.Request) {
 	w.Write(png)
 }
 
+// handleEnablePeer enables a peer and adds it to the WireGuard interface.
+func (s *Server) handleEnablePeer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	networkID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	peerID, err := strconv.ParseInt(r.PathValue("pid"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid peer ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	peer, err := s.db.GetPeerByID(ctx, peerID)
+	if err != nil {
+		s.logger.Error("get_peer_failed", "error", err, "operation", "enable_peer", "component", "handler", "peer_id", peerID)
+		writeError(w, r, fmt.Errorf("failed to get peer"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if peer == nil || peer.NetworkID != networkID {
+		writeError(w, r, fmt.Errorf("peer %d not found in network %d", peerID, networkID), apperr.ErrPeerNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	if peer.Enabled {
+		writeJSON(w, http.StatusOK, peerToResponse(peer))
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, networkID)
+	if err != nil || network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", networkID), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	peer.Enabled = true
+	if err := s.db.UpdatePeer(ctx, peer); err != nil {
+		s.logger.Error("update_peer_failed", "error", err, "operation", "enable_peer", "component", "handler", "peer_id", peerID)
+		writeError(w, r, fmt.Errorf("failed to update peer"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Add peer to WireGuard interface.
+	if s.wgManager != nil && network.Enabled {
+		peerCfg := wg.PeerConfig{
+			Name:                peer.Name,
+			PublicKey:           peer.PublicKey,
+			PresharedKey:        peer.PresharedKey,
+			AllowedIPs:          peer.AllowedIPs,
+			Endpoint:            peer.Endpoint,
+			PersistentKeepalive: peer.PersistentKeepalive,
+		}
+		if addErr := s.wgManager.AddPeer(ctx, network.Interface, peerCfg); addErr != nil {
+			s.logger.Error("add_peer_wg_failed", "error", addErr, "operation", "enable_peer", "component", "handler", "peer_id", peerID)
+		}
+	}
+
+	updated, _ := s.db.GetPeerByID(ctx, peerID)
+	if updated == nil {
+		updated = peer
+	}
+
+	s.logger.Info("peer_enabled", "peer_id", peerID, "peer_name", peer.Name, "network_id", networkID, "component", "handler")
+	s.auditf(r, "peer.enabled", "peer", "enabled peer %q (id=%d) in network %d", peer.Name, peerID, networkID)
+	writeJSON(w, http.StatusOK, peerToResponse(updated))
+}
+
+// handleDisablePeer disables a peer and removes it from the WireGuard interface.
+func (s *Server) handleDisablePeer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	networkID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	peerID, err := strconv.ParseInt(r.PathValue("pid"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid peer ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	peer, err := s.db.GetPeerByID(ctx, peerID)
+	if err != nil {
+		s.logger.Error("get_peer_failed", "error", err, "operation", "disable_peer", "component", "handler", "peer_id", peerID)
+		writeError(w, r, fmt.Errorf("failed to get peer"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if peer == nil || peer.NetworkID != networkID {
+		writeError(w, r, fmt.Errorf("peer %d not found in network %d", peerID, networkID), apperr.ErrPeerNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	if !peer.Enabled {
+		writeJSON(w, http.StatusOK, peerToResponse(peer))
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, networkID)
+	if err != nil || network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", networkID), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	peer.Enabled = false
+	if err := s.db.UpdatePeer(ctx, peer); err != nil {
+		s.logger.Error("update_peer_failed", "error", err, "operation", "disable_peer", "component", "handler", "peer_id", peerID)
+		writeError(w, r, fmt.Errorf("failed to update peer"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Remove peer from WireGuard interface.
+	if s.wgManager != nil && network.Enabled {
+		if rmErr := s.wgManager.RemovePeer(ctx, network.Interface, peer.PublicKey); rmErr != nil {
+			s.logger.Error("remove_peer_wg_failed", "error", rmErr, "operation", "disable_peer", "component", "handler", "peer_id", peerID)
+		}
+	}
+
+	updated, _ := s.db.GetPeerByID(ctx, peerID)
+	if updated == nil {
+		updated = peer
+	}
+
+	s.logger.Info("peer_disabled", "peer_id", peerID, "peer_name", peer.Name, "network_id", networkID, "component", "handler")
+	s.auditf(r, "peer.disabled", "peer", "disabled peer %q (id=%d) in network %d", peer.Name, peerID, networkID)
+	writeJSON(w, http.StatusOK, peerToResponse(updated))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 func peerToResponse(p *db.Peer) peerResponse {
-	return peerResponse{
+	resp := peerResponse{
 		ID:                  p.ID,
 		NetworkID:           p.NetworkID,
 		Name:                p.Name,
@@ -805,4 +994,9 @@ func peerToResponse(p *db.Peer) peerResponse {
 		CreatedAt:           p.CreatedAt.Unix(),
 		UpdatedAt:           p.UpdatedAt.Unix(),
 	}
+	if p.ExpiresAt != nil {
+		ts := p.ExpiresAt.Unix()
+		resp.ExpiresAt = &ts
+	}
+	return resp
 }

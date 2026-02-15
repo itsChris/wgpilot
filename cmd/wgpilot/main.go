@@ -12,13 +12,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	wgpilot "github.com/itsChris/wgpilot"
-	"github.com/itsChris/wgpilot/internal/auth"
+	authpkg "github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/config"
+	"github.com/itsChris/wgpilot/internal/crypto"
 	"github.com/itsChris/wgpilot/internal/db"
 	"github.com/itsChris/wgpilot/internal/debug"
 	"github.com/itsChris/wgpilot/internal/logging"
@@ -68,6 +70,7 @@ func newRootCmd() *cobra.Command {
 		newRestoreCmd(),
 		newConfigCmd(),
 		newUpdateCmd(),
+		newAPIKeyCmd(),
 	)
 
 	return root
@@ -157,23 +160,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode jwt secret: %w", err)
 	}
 
+	// ── Set up encryption key for private keys at rest ──────────────
+	encKey, err := crypto.DeriveKey(jwtSecret)
+	if err != nil {
+		return fmt.Errorf("derive encryption key: %w", err)
+	}
+	database.SetEncryptionKey(encKey)
+
+	// Encrypt any existing unencrypted private keys.
+	if err := db.MigrateEncryptKeys(ctx, database, logger); err != nil {
+		return fmt.Errorf("encrypt existing keys: %w", err)
+	}
+
 	sessionTTL, err := time.ParseDuration(cfg.Auth.SessionTTL)
 	if err != nil {
 		return fmt.Errorf("parse session ttl %q: %w", cfg.Auth.SessionTTL, err)
 	}
 
-	jwtSvc, err := auth.NewJWTService(jwtSecret, sessionTTL, logger)
+	jwtSvc, err := authpkg.NewJWTService(jwtSecret, sessionTTL, logger)
 	if err != nil {
 		return fmt.Errorf("create jwt service: %w", err)
 	}
 
 	secureCookies := !cfg.Server.DevMode
-	sessions, err := auth.NewSessionManager(secureCookies, logger)
+	sessions, err := authpkg.NewSessionManager(secureCookies, logger)
 	if err != nil {
 		return fmt.Errorf("create session manager: %w", err)
 	}
 
-	rateLimiter, err := auth.NewLoginRateLimiter(cfg.Auth.RateLimitRPM, time.Minute)
+	rateLimiter, err := authpkg.NewLoginRateLimiter(cfg.Auth.RateLimitRPM, time.Minute)
 	if err != nil {
 		return fmt.Errorf("create rate limiter: %w", err)
 	}
@@ -238,12 +253,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	httpServer := &http.Server{
-		Addr:         cfg.Server.Listen,
-		Handler:      srv,
-		TLSConfig:    tlsMgr.TLSConfig(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           cfg.Server.Listen,
+		Handler:        srv,
+		TLSConfig:      tlsMgr.TLSConfig(),
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 32 << 10,
 	}
 
 	// ── Start background monitor ────────────────────────────────────
@@ -265,7 +281,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		retention = ret
 	}
 
-	poller, err := monitor.NewPoller(database, nil, logger, pollInterval)
+	poller, err := monitor.NewPoller(database, wgMgr, logger, pollInterval)
 	if err != nil {
 		logger.Warn("monitor_poller_init_failed",
 			"error", err,
@@ -283,6 +299,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		)
 	} else {
 		go compactor.Run(monitorCtx)
+	}
+
+	// ── Start peer expiry checker ────────────────────────────────────
+	expiryChecker, err := monitor.NewExpiryChecker(database, wgMgr, logger, 1*time.Hour)
+	if err != nil {
+		logger.Warn("expiry_checker_init_failed",
+			"error", err,
+			"component", "main",
+		)
+	} else {
+		go expiryChecker.Run(monitorCtx)
 	}
 
 	// ── Signal handling ──────────────────────────────────────────────
@@ -447,7 +474,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// Generate and store JWT secret.
-			jwtSecret, err := auth.GenerateSecret(32)
+			jwtSecret, err := authpkg.GenerateSecret(32)
 			if err != nil {
 				return fmt.Errorf("generate JWT secret: %w", err)
 			}
@@ -461,11 +488,11 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// Generate and store OTP.
-			otp, err := auth.GenerateOTP(16)
+			otp, err := authpkg.GenerateOTP(16)
 			if err != nil {
 				return fmt.Errorf("generate OTP: %w", err)
 			}
-			otpHash, err := auth.HashPassword(otp)
+			otpHash, err := authpkg.HashPassword(otp)
 			if err != nil {
 				return fmt.Errorf("hash OTP: %w", err)
 			}
@@ -519,25 +546,86 @@ func newVersionCmd() *cobra.Command {
 }
 
 func newBackupCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "backup",
+	cmd := &cobra.Command{
+		Use:   "backup [output-path]",
 		Short: "Create a backup of the database",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			dbPath := cfg.Database.Path
+			dataDir := filepath.Dir(dbPath)
+			if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+				return fmt.Errorf("database not found at %s", dbPath)
+			}
+
+			outPath := filepath.Join(dataDir, fmt.Sprintf("wgpilot-backup-%s.db", time.Now().Format("20060102-150405")))
+			if len(args) > 0 {
+				outPath = args[0]
+			}
+
+			database, err := db.Open(dbPath, false, nil)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer database.Close()
+
+			if err := database.VacuumInto(context.Background(), outPath); err != nil {
+				return fmt.Errorf("backup failed: %w", err)
+			}
+
+			fmt.Printf("Backup created: %s\n", outPath)
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newRestoreCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "restore",
+	cmd := &cobra.Command{
+		Use:   "restore <backup-path>",
 		Short: "Restore database from a backup",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			backupPath := args[0]
+			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+				return fmt.Errorf("backup file not found: %s", backupPath)
+			}
+
+			dbPath := cfg.Database.Path
+
+			// Validate the backup by opening it.
+			backupDB, err := db.Open(backupPath, true, nil)
+			if err != nil {
+				return fmt.Errorf("invalid backup file: %w", err)
+			}
+			backupDB.Close()
+
+			// Copy backup over the current database.
+			data, err := os.ReadFile(backupPath)
+			if err != nil {
+				return fmt.Errorf("read backup: %w", err)
+			}
+			if err := os.WriteFile(dbPath, data, 0640); err != nil {
+				return fmt.Errorf("write database: %w", err)
+			}
+
+			fmt.Printf("Database restored from %s\n", backupPath)
+			fmt.Println("Please restart the wgpilot service.")
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newConfigCmd() *cobra.Command {
@@ -550,7 +638,31 @@ func newConfigCmd() *cobra.Command {
 		Use:   "check",
 		Short: "Validate configuration file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("config error: %w", err)
+			}
+
+			dataDir := filepath.Dir(cfg.Database.Path)
+			fmt.Println("Configuration validated successfully.")
+			fmt.Printf("  Data directory: %s\n", dataDir)
+			fmt.Printf("  Listen address: %s\n", cfg.Server.Listen)
+			fmt.Printf("  TLS mode:       %s\n", cfg.TLS.Mode)
+			fmt.Printf("  Dev mode:       %v\n", cfg.Server.DevMode)
+
+			// Check data directory.
+			if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+				fmt.Printf("  WARNING: Data directory %s does not exist\n", dataDir)
+			}
+
+			// Check database.
+			if _, err := os.Stat(cfg.Database.Path); os.IsNotExist(err) {
+				fmt.Println("  Database: not found (will be created on first run)")
+			} else {
+				fmt.Printf("  Database: %s\n", cfg.Database.Path)
+			}
+
 			return nil
 		},
 	})
@@ -604,4 +716,201 @@ func newUpdateCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("check", false, "only check for updates, don't install")
 	return cmd
+}
+
+func newAPIKeyCmd() *cobra.Command {
+	apiKeyCmd := &cobra.Command{
+		Use:   "api-key",
+		Short: "Manage API keys",
+	}
+
+	apiKeyCmd.AddCommand(newAPIKeyCreateCmd())
+	apiKeyCmd.AddCommand(newAPIKeyListCmd())
+	apiKeyCmd.AddCommand(newAPIKeyRevokeCmd())
+
+	return apiKeyCmd
+}
+
+func newAPIKeyCreateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new API key",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, _ := cmd.Flags().GetString("name")
+			role, _ := cmd.Flags().GetString("role")
+			expiresIn, _ := cmd.Flags().GetString("expires-in")
+
+			if name == "" {
+				return fmt.Errorf("--name is required")
+			}
+			if role != "admin" && role != "viewer" {
+				return fmt.Errorf("--role must be 'admin' or 'viewer'")
+			}
+
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			ctx := context.Background()
+			logger := logging.New(logging.Config{Level: slog.LevelWarn})
+
+			database, err := db.New(ctx, cfg.Database.Path, logger, false)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer database.Close()
+
+			if err := db.Migrate(ctx, database, logger); err != nil {
+				return fmt.Errorf("run migrations: %w", err)
+			}
+
+			// Find or create a system user for CLI-created keys.
+			users, err := database.ListUsers(ctx)
+			if err != nil {
+				return fmt.Errorf("list users: %w", err)
+			}
+			if len(users) == 0 {
+				return fmt.Errorf("no users found — run setup first")
+			}
+			userID := users[0].ID // Use the first (admin) user.
+
+			var expiresAt *time.Time
+			if expiresIn != "" {
+				d, err := time.ParseDuration(expiresIn)
+				if err != nil {
+					return fmt.Errorf("invalid --expires-in duration: %w", err)
+				}
+				t := time.Now().Add(d)
+				expiresAt = &t
+			}
+
+			key, hash, prefix, err := authpkg.GenerateAPIKey()
+			if err != nil {
+				return fmt.Errorf("generate api key: %w", err)
+			}
+
+			apiKey := &db.APIKey{
+				Name:      name,
+				KeyHash:   hash,
+				KeyPrefix: prefix,
+				UserID:    userID,
+				Role:      role,
+				ExpiresAt: expiresAt,
+			}
+
+			id, err := database.CreateAPIKey(ctx, apiKey)
+			if err != nil {
+				return fmt.Errorf("create api key: %w", err)
+			}
+
+			fmt.Printf("API key created (id=%d):\n", id)
+			fmt.Printf("  Name:    %s\n", name)
+			fmt.Printf("  Role:    %s\n", role)
+			fmt.Printf("  Key:     %s\n", key)
+			if expiresAt != nil {
+				fmt.Printf("  Expires: %s\n", expiresAt.Format(time.RFC3339))
+			} else {
+				fmt.Printf("  Expires: never\n")
+			}
+			fmt.Println("\nSave this key — it cannot be retrieved again.")
+			return nil
+		},
+	}
+	cmd.Flags().String("name", "", "name for the API key (required)")
+	cmd.Flags().String("role", "admin", "role for the API key (admin or viewer)")
+	cmd.Flags().String("expires-in", "", "expiry duration (e.g. 720h for 30 days)")
+	return cmd
+}
+
+func newAPIKeyListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all API keys",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			ctx := context.Background()
+			logger := logging.New(logging.Config{Level: slog.LevelWarn})
+
+			database, err := db.New(ctx, cfg.Database.Path, logger, false)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer database.Close()
+
+			if err := db.Migrate(ctx, database, logger); err != nil {
+				return fmt.Errorf("run migrations: %w", err)
+			}
+
+			keys, err := database.ListAllAPIKeys(ctx)
+			if err != nil {
+				return fmt.Errorf("list api keys: %w", err)
+			}
+
+			if len(keys) == 0 {
+				fmt.Println("No API keys found.")
+				return nil
+			}
+
+			fmt.Printf("%-4s %-20s %-20s %-8s %-20s %-20s\n", "ID", "NAME", "PREFIX", "ROLE", "EXPIRES", "LAST USED")
+			for _, k := range keys {
+				expires := "never"
+				if k.ExpiresAt != nil {
+					expires = k.ExpiresAt.Format("2006-01-02 15:04")
+				}
+				lastUsed := "never"
+				if k.LastUsed != nil {
+					lastUsed = k.LastUsed.Format("2006-01-02 15:04")
+				}
+				fmt.Printf("%-4d %-20s %-20s %-8s %-20s %-20s\n", k.ID, k.Name, k.KeyPrefix, k.Role, expires, lastUsed)
+			}
+			return nil
+		},
+	}
+}
+
+func newAPIKeyRevokeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "revoke <id>",
+		Short: "Revoke (delete) an API key",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid key ID: %w", err)
+			}
+
+			configPath, _ := cmd.Flags().GetString("config")
+			cfg, err := config.Load(configPath, cmd.Flags())
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			ctx := context.Background()
+			logger := logging.New(logging.Config{Level: slog.LevelWarn})
+
+			database, err := db.New(ctx, cfg.Database.Path, logger, false)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer database.Close()
+
+			if err := db.Migrate(ctx, database, logger); err != nil {
+				return fmt.Errorf("run migrations: %w", err)
+			}
+
+			if err := database.DeleteAPIKey(ctx, id); err != nil {
+				return fmt.Errorf("revoke api key: %w", err)
+			}
+
+			fmt.Printf("API key %d revoked.\n", id)
+			return nil
+		},
+	}
 }

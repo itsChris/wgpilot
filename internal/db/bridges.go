@@ -131,6 +131,20 @@ func (d *DB) BridgeExistsBetween(ctx context.Context, networkAID, networkBID int
 	return count > 0, nil
 }
 
+// UpdateBridge updates a bridge's mutable fields.
+func (d *DB) UpdateBridge(ctx context.Context, b *Bridge) error {
+	_, err := d.ExecContext(ctx, `
+		UPDATE network_bridges
+		SET direction = ?, allowed_cidrs = ?, enabled = ?, updated_at = unixepoch()
+		WHERE id = ?`,
+		b.Direction, b.AllowedCIDRs, b.Enabled, b.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update bridge %d: %w", b.ID, err)
+	}
+	return nil
+}
+
 // DeleteBridge deletes a bridge by ID.
 func (d *DB) DeleteBridge(ctx context.Context, id int64) error {
 	_, err := d.ExecContext(ctx,

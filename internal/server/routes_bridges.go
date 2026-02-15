@@ -183,6 +183,7 @@ func (s *Server) handleCreateBridge(w http.ResponseWriter, r *http.Request) {
 		"direction", req.Direction,
 		"component", "handler",
 	)
+	s.auditf(r, "bridge.created", "bridge", "created bridge (id=%d) between networks %d and %d", id, req.NetworkAID, req.NetworkBID)
 
 	writeJSON(w, http.StatusCreated, bridgeToResponse(created, networkA, networkB))
 }
@@ -260,6 +261,89 @@ func (s *Server) handleGetBridge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bridgeToResponse(bridge, networkA, networkB))
 }
 
+// handleUpdateBridge updates a bridge's direction, CIDRs, or enabled status.
+func (s *Server) handleUpdateBridge(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid bridge ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	bridge, err := s.db.GetBridgeByID(ctx, id)
+	if err != nil {
+		s.logger.Error("get_bridge_failed", "error", err, "operation", "update_bridge", "component", "handler", "bridge_id", id)
+		writeError(w, r, fmt.Errorf("failed to get bridge"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if bridge == nil {
+		writeError(w, r, fmt.Errorf("bridge %d not found", id), apperr.ErrBridgeNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	var req struct {
+		Direction    *string `json:"direction"`
+		AllowedCIDRs *string `json:"allowed_cidrs"`
+		Enabled      *bool   `json:"enabled"`
+	}
+	if code, status, err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err, code, status, s.devMode)
+		return
+	}
+
+	oldDirection := bridge.Direction
+	if req.Direction != nil {
+		if !isValidDirection(*req.Direction) {
+			writeError(w, r, fmt.Errorf("direction must be a_to_b, b_to_a, or bidirectional"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+			return
+		}
+		bridge.Direction = *req.Direction
+	}
+	if req.AllowedCIDRs != nil {
+		bridge.AllowedCIDRs = *req.AllowedCIDRs
+	}
+	if req.Enabled != nil {
+		bridge.Enabled = *req.Enabled
+	}
+
+	// Reconcile nftables if direction changed.
+	if s.nftManager != nil && oldDirection != bridge.Direction {
+		networkA, _ := s.db.GetNetworkByID(ctx, bridge.NetworkAID)
+		networkB, _ := s.db.GetNetworkByID(ctx, bridge.NetworkBID)
+		if networkA != nil && networkB != nil {
+			// Remove old rules, add new ones.
+			if err := s.nftManager.RemoveNetworkBridge(networkA.Interface, networkB.Interface); err != nil {
+				s.logger.Error("remove_bridge_nft_failed", "error", err, "operation", "update_bridge", "component", "handler", "bridge_id", id)
+			}
+			if err := s.nftManager.AddNetworkBridge(networkA.Interface, networkB.Interface, bridge.Direction); err != nil {
+				s.logger.Error("add_bridge_nft_failed", "error", err, "operation", "update_bridge", "component", "handler", "bridge_id", id)
+				writeError(w, r, fmt.Errorf("failed to update bridge firewall rules"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+				return
+			}
+		}
+	}
+
+	if err := s.db.UpdateBridge(ctx, bridge); err != nil {
+		s.logger.Error("update_bridge_db_failed", "error", err, "operation", "update_bridge", "component", "handler", "bridge_id", id)
+		writeError(w, r, fmt.Errorf("failed to update bridge"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	updated, _ := s.db.GetBridgeByID(ctx, id)
+	if updated == nil {
+		updated = bridge
+	}
+
+	networkA, _ := s.db.GetNetworkByID(ctx, updated.NetworkAID)
+	networkB, _ := s.db.GetNetworkByID(ctx, updated.NetworkBID)
+
+	s.logger.Info("bridge_updated", "bridge_id", id, "component", "handler")
+	s.auditf(r, "bridge.updated", "bridge", "updated bridge (id=%d)", id)
+
+	writeJSON(w, http.StatusOK, bridgeToResponse(updated, networkA, networkB))
+}
+
 // handleDeleteBridge deletes a bridge and removes its nftables rules.
 func (s *Server) handleDeleteBridge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -320,6 +404,7 @@ func (s *Server) handleDeleteBridge(w http.ResponseWriter, r *http.Request) {
 		"network_b_id", bridge.NetworkBID,
 		"component", "handler",
 	)
+	s.auditf(r, "bridge.deleted", "bridge", "deleted bridge (id=%d) between networks %d and %d", id, bridge.NetworkAID, bridge.NetworkBID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -268,7 +268,7 @@ func TestNotImplementedEndpoint_Returns501(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "/api/settings", nil)
+	req := httptest.NewRequest("GET", "/api/settings/tls", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)

@@ -173,6 +173,115 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleNetworkStats returns aggregated peer snapshot data for a network.
+// Query params: from (unix timestamp), to (unix timestamp), peer_id (optional).
+func (s *Server) handleNetworkStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	networkID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, networkID)
+	if err != nil {
+		s.logger.Error("stats_get_network_failed", "error", err, "operation", "network_stats", "component", "handler", "network_id", networkID)
+		writeError(w, r, fmt.Errorf("failed to get network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", networkID), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	q := r.URL.Query()
+
+	// Default time range: last 24 hours.
+	to := time.Now()
+	from := to.Add(-24 * time.Hour)
+
+	if v := q.Get("from"); v != "" {
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
+			from = time.Unix(ts, 0)
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
+			to = time.Unix(ts, 0)
+		}
+	}
+
+	// Get peers for this network.
+	peers, err := s.db.ListPeersByNetworkID(ctx, networkID)
+	if err != nil {
+		s.logger.Error("stats_list_peers_failed", "error", err, "operation", "network_stats", "component", "handler", "network_id", networkID)
+		writeError(w, r, fmt.Errorf("failed to list peers"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Optional peer filter.
+	var filterPeerID int64
+	if v := q.Get("peer_id"); v != "" {
+		if pid, err := strconv.ParseInt(v, 10, 64); err == nil {
+			filterPeerID = pid
+		}
+	}
+
+	type peerStats struct {
+		PeerID    int64           `json:"peer_id"`
+		PeerName  string          `json:"peer_name"`
+		Snapshots []snapshotEntry `json:"snapshots"`
+	}
+
+	var result []peerStats
+	for _, p := range peers {
+		if filterPeerID > 0 && p.ID != filterPeerID {
+			continue
+		}
+
+		snapshots, err := s.db.ListSnapshots(ctx, p.ID, from, to)
+		if err != nil {
+			s.logger.Error("stats_list_snapshots_failed", "error", err, "operation", "network_stats", "component", "handler", "peer_id", p.ID)
+			continue
+		}
+
+		entries := make([]snapshotEntry, 0, len(snapshots))
+		for _, snap := range snapshots {
+			entries = append(entries, snapshotEntry{
+				Timestamp: snap.Timestamp.Unix(),
+				RxBytes:   snap.RxBytes,
+				TxBytes:   snap.TxBytes,
+				Online:    snap.Online,
+			})
+		}
+
+		result = append(result, peerStats{
+			PeerID:    p.ID,
+			PeerName:  p.Name,
+			Snapshots: entries,
+		})
+	}
+
+	if result == nil {
+		result = []peerStats{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"network_id": networkID,
+		"from":       from.Unix(),
+		"to":         to.Unix(),
+		"peers":      result,
+	})
+}
+
+type snapshotEntry struct {
+	Timestamp int64 `json:"timestamp"`
+	RxBytes   int64 `json:"rx_bytes"`
+	TxBytes   int64 `json:"tx_bytes"`
+	Online    bool  `json:"online"`
+}
+
 func (s *Server) sendSSEStatus(w http.ResponseWriter, rc *http.ResponseController, iface string, networkID int64) {
 	if s.wgManager == nil {
 		return

@@ -101,6 +101,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"remote_addr", ip,
 		"component", "auth",
 	)
+	s.auditf(r, "auth.login", "user", "user %q logged in", user.Username)
 
 	writeJSON(w, http.StatusOK, loginResponse{
 		User: userInfo{ID: user.ID, Username: user.Username},
@@ -219,6 +220,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		"remote_addr", r.RemoteAddr,
 		"component", "auth",
 	)
+	s.auditf(r, "setup.completed", "system", "initial setup completed by user %q (id=%d)", req.Username, userID)
 
 	writeJSON(w, http.StatusCreated, loginResponse{
 		User: userInfo{ID: userID, Username: req.Username},
@@ -235,6 +237,79 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// handleChangePassword allows the authenticated user to change their password.
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	claims := auth.UserFromContext(ctx)
+	if claims == nil {
+		writeError(w, r, fmt.Errorf("unauthorized"), apperr.ErrUnauthorized, http.StatusUnauthorized, s.devMode)
+		return
+	}
+
+	var req struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if code, status, err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err, code, status, s.devMode)
+		return
+	}
+
+	if req.OldPassword == "" || req.NewPassword == "" {
+		writeError(w, r, fmt.Errorf("old_password and new_password required"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	if len(req.NewPassword) < auth.MinPasswordLength {
+		writeError(w, r, fmt.Errorf("password must be at least %d characters", auth.MinPasswordLength), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	// Parse user ID from claims.
+	var userID int64
+	if _, err := fmt.Sscanf(claims.Subject, "%d", &userID); err != nil {
+		writeError(w, r, fmt.Errorf("invalid session"), apperr.ErrUnauthorized, http.StatusUnauthorized, s.devMode)
+		return
+	}
+
+	user, err := s.db.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		s.logger.Error("change_password_get_user_failed", "error", err, "user_id", userID, "component", "auth")
+		writeError(w, r, fmt.Errorf("user not found"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Verify old password.
+	if err := auth.VerifyPassword(user.PasswordHash, req.OldPassword); err != nil {
+		s.logger.Warn("change_password_wrong_old", "user", user.Username, "remote_addr", r.RemoteAddr, "component", "auth")
+		writeError(w, r, fmt.Errorf("invalid current password"), apperr.ErrInvalidCredentials, http.StatusUnauthorized, s.devMode)
+		return
+	}
+
+	// Hash and store new password.
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		s.logger.Error("change_password_hash_failed", "error", err, "component", "auth")
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	if err := s.db.UpdateUserPassword(ctx, userID, hash); err != nil {
+		s.logger.Error("change_password_update_failed", "error", err, "user_id", userID, "component", "auth")
+		writeError(w, r, fmt.Errorf("failed to update password"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Clear current session cookie so the user must re-login.
+	s.sessions.ClearCookie(w)
+
+	s.logger.Info("password_changed", "user", user.Username, "user_id", userID, "remote_addr", r.RemoteAddr, "component", "auth")
+	s.auditf(r, "auth.password_changed", "user", "user %q changed their password", user.Username)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
 }
 
 // handleMe returns the current authenticated user.

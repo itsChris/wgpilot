@@ -1,0 +1,10 @@
+*.db
+*.db-wal
+*.db-shm
+.git
+.env
+node_modules
+frontend/node_modules
+wgpilot
+wgpilot_linux_amd64
+docs/

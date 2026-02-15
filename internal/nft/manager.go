@@ -313,6 +313,92 @@ func (m *Manager) RemoveNetworkBridge(ifaceA, ifaceB string) error {
 	return nil
 }
 
+// OpenUDPPort adds an input rule allowing UDP traffic on the given port.
+func (m *Manager) OpenUDPPort(port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.logger.Debug("nft_open_udp_start",
+		"port", port,
+		"operation", "open_udp_port",
+	)
+
+	rule := Rule{
+		Kind: RuleUDPInput,
+		Port: port,
+	}
+	key := ruleKey(rule)
+
+	if _, exists := m.rules[key]; exists {
+		m.logger.Debug("nft_open_udp_idempotent",
+			"port", port,
+			"operation", "open_udp_port",
+		)
+		return nil
+	}
+
+	m.rules[key] = rule
+
+	if err := m.apply(); err != nil {
+		delete(m.rules, key)
+		m.logger.Error("nft_apply_failed",
+			"error", err,
+			"error_type", fmt.Sprintf("%T", err),
+			"operation", "open_udp_port",
+			"port", port,
+		)
+		return fmt.Errorf("open UDP port %d: %w", port, err)
+	}
+
+	m.logDevDump("open_udp_port", fmt.Sprintf("udp/%d", port))
+	m.logger.Info("nft_udp_port_opened",
+		"port", port,
+		"operation", "open_udp_port",
+	)
+	return nil
+}
+
+// CloseUDPPort removes the input rule for the given UDP port.
+func (m *Manager) CloseUDPPort(port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.logger.Debug("nft_close_udp_start",
+		"port", port,
+		"operation", "close_udp_port",
+	)
+
+	key := fmt.Sprintf("udp:%d", port)
+	old, exists := m.rules[key]
+	if !exists {
+		m.logger.Debug("nft_close_udp_not_found",
+			"port", port,
+			"operation", "close_udp_port",
+		)
+		return nil
+	}
+
+	delete(m.rules, key)
+
+	if err := m.apply(); err != nil {
+		m.rules[key] = old
+		m.logger.Error("nft_apply_failed",
+			"error", err,
+			"error_type", fmt.Sprintf("%T", err),
+			"operation", "close_udp_port",
+			"port", port,
+		)
+		return fmt.Errorf("close UDP port %d: %w", port, err)
+	}
+
+	m.logDevDump("close_udp_port", fmt.Sprintf("udp/%d", port))
+	m.logger.Info("nft_udp_port_closed",
+		"port", port,
+		"operation", "close_udp_port",
+	)
+	return nil
+}
+
 // DumpRules returns a human-readable nftables-style representation of all active rules.
 func (m *Manager) DumpRules() (string, error) {
 	m.mu.Lock()

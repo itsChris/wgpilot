@@ -1,10 +1,12 @@
 package nft
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
+	"golang.org/x/sys/unix"
 )
 
 const tableName = "wgpilot"
@@ -50,13 +52,33 @@ func (a *nftApplier) Apply(rules []Rule) error {
 	})
 
 	// Separate rules by chain type.
-	var natRules, forwardRules []Rule
+	var natRules, forwardRules, inputRules []Rule
 	for _, r := range rules {
 		switch r.Kind {
 		case RuleNATMasquerade:
 			natRules = append(natRules, r)
 		case RuleInterPeerForward, RuleBridgeForward:
 			forwardRules = append(forwardRules, r)
+		case RuleUDPInput:
+			inputRules = append(inputRules, r)
+		}
+	}
+
+	// Input chain for UDP port rules.
+	if len(inputRules) > 0 {
+		chain := conn.AddChain(&nftables.Chain{
+			Name:     "input",
+			Table:    table,
+			Type:     nftables.ChainTypeFilter,
+			Hooknum:  nftables.ChainHookInput,
+			Priority: nftables.ChainPriorityFilter,
+		})
+		for _, r := range inputRules {
+			conn.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: udpInputExprs(r.Port),
+			})
 		}
 	}
 
@@ -159,6 +181,28 @@ func ifaceBytes(iface string) []byte {
 	b := make([]byte, len(iface)+1)
 	copy(b, iface)
 	return b
+}
+
+// udpInputExprs builds nftables expressions for:
+//
+//	meta l4proto udp th dport <port> accept
+func udpInputExprs(port int) []expr.Any {
+	portBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBytes, uint16(port))
+	return []expr.Any{
+		// Match UDP protocol
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+		// Match destination port
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2,
+			Len:          2,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: portBytes},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
 }
 
 // noopApplier is an Applier that does nothing. Used for testing.

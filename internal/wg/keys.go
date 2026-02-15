@@ -26,6 +26,15 @@ func GeneratePresharedKey() (string, error) {
 	return key.String(), nil
 }
 
+// PublicKeyFromPrivate derives the public key from a base64-encoded private key.
+func PublicKeyFromPrivate(privKeyBase64 string) (string, error) {
+	key, err := wgtypes.ParseKey(privKeyBase64)
+	if err != nil {
+		return "", fmt.Errorf("parse private key: %w", err)
+	}
+	return key.PublicKey().String(), nil
+}
+
 // ParseKey validates and parses a base64-encoded WireGuard key.
 func ParseKey(s string) error {
 	_, err := wgtypes.ParseKey(s)

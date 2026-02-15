@@ -79,7 +79,7 @@ func Run(cfg Config) error {
 		GoVersion: runtime.Version(),
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
-		Kernel:    detectKernelVersion(),
+		Kernel:    DetectKernelVersion(),
 	}
 
 	result.Checks = runChecks(cfg)
@@ -112,7 +112,7 @@ func checkWireGuardModule() CheckResult {
 	data, err := os.ReadFile("/proc/modules")
 	if err != nil {
 		// If we can't read /proc/modules, try to check if kernel >= 5.6 (built-in).
-		kver := detectKernelVersion()
+		kver := DetectKernelVersion()
 		if kver != "unknown" {
 			return CheckResult{StatusWarn, fmt.Sprintf("Cannot read /proc/modules, kernel: %s", kver)}
 		}
@@ -122,7 +122,7 @@ func checkWireGuardModule() CheckResult {
 		return CheckResult{StatusPass, "WireGuard kernel module loaded"}
 	}
 	// Check kernel version for built-in (5.6+).
-	kver := detectKernelVersion()
+	kver := DetectKernelVersion()
 	parts := strings.SplitN(kver, ".", 3)
 	if len(parts) >= 2 {
 		major := 0
@@ -275,7 +275,8 @@ func checkDatabase(path string) DBStats {
 	return stats
 }
 
-func detectKernelVersion() string {
+// DetectKernelVersion returns the running kernel version string.
+func DetectKernelVersion() string {
 	data, err := os.ReadFile("/proc/version")
 	if err != nil {
 		return "unknown"

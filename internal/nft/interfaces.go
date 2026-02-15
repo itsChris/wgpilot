@@ -31,6 +31,14 @@ type NFTableManager interface {
 	// The order of interfaces does not matter. Returns nil if no bridge exists.
 	RemoveNetworkBridge(ifaceA, ifaceB string) error
 
+	// OpenUDPPort adds an input rule allowing UDP traffic on the given port.
+	// Used to open WireGuard listen ports in the firewall. Idempotent.
+	OpenUDPPort(port int) error
+
+	// CloseUDPPort removes the input rule for the given UDP port.
+	// Returns nil if no rule exists for the port.
+	CloseUDPPort(port int) error
+
 	// DumpRules returns a human-readable nftables-style representation
 	// of all active rules in the wgpilot table.
 	DumpRules() (string, error)

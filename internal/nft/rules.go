@@ -13,6 +13,7 @@ const (
 	RuleNATMasquerade    RuleKind = "nat_masquerade"
 	RuleInterPeerForward RuleKind = "inter_peer_forward"
 	RuleBridgeForward    RuleKind = "bridge_forward"
+	RuleUDPInput         RuleKind = "udp_input"
 )
 
 // Rule represents a managed nftables rule in the wgpilot table.
@@ -22,6 +23,7 @@ type Rule struct {
 	IfaceB    string // second interface, for bridge rules
 	Subnet    string // subnet CIDR, for NAT rules
 	Direction string // "a_to_b", "b_to_a", "bidirectional" for bridge rules
+	Port      int    // UDP port for input rules
 }
 
 // ruleKey returns a unique identifier for the rule, used for deduplication.
@@ -33,6 +35,8 @@ func ruleKey(r Rule) string {
 		return "forward:" + r.Iface
 	case RuleBridgeForward:
 		return "bridge:" + sortedPair(r.Iface, r.IfaceB)
+	case RuleUDPInput:
+		return fmt.Sprintf("udp:%d", r.Port)
 	default:
 		return fmt.Sprintf("unknown:%s:%s", r.Kind, r.Iface)
 	}
@@ -119,6 +123,7 @@ func formatRuleset(rules map[string]Rule) string {
 
 	var natLines []string
 	var fwdEntries []forwardEntry
+	var inputLines []string
 
 	for _, k := range keys {
 		r := rules[k]
@@ -129,6 +134,9 @@ func formatRuleset(rules map[string]Rule) string {
 				r.Iface, r.Iface, r.Subnet))
 		case RuleInterPeerForward, RuleBridgeForward:
 			fwdEntries = append(fwdEntries, expandForwardEntries(r)...)
+		case RuleUDPInput:
+			inputLines = append(inputLines, fmt.Sprintf(
+				"    udp dport %d accept  # WireGuard", r.Port))
 		}
 	}
 
@@ -142,6 +150,16 @@ func formatRuleset(rules map[string]Rule) string {
 
 	var b strings.Builder
 	b.WriteString("table ip wgpilot {\n")
+
+	if len(inputLines) > 0 {
+		b.WriteString("  chain input {\n")
+		b.WriteString("    type filter hook input priority 0;\n")
+		for _, line := range inputLines {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		b.WriteString("  }\n")
+	}
 
 	if len(natLines) > 0 {
 		b.WriteString("  chain postrouting {\n")

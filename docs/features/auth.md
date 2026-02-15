@@ -47,7 +47,7 @@ The install token is invalidated after the admin account is created.
 ## Password Storage
 
 - bcrypt with cost factor 12.
-- Minimum password length: 8 characters (enforced in UI and API).
+- Minimum password length: 10 characters (enforced in UI and API).
 
 ## Security Hardening
 

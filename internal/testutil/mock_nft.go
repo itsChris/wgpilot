@@ -17,6 +17,7 @@ type MockNFTManager struct {
 	NATRules     map[string]string // iface -> subnet
 	ForwardRules map[string]bool   // iface -> enabled
 	BridgeRules  map[string]string // "ifaceA:ifaceB" (sorted) -> direction
+	UDPPorts     map[int]bool      // port -> open
 
 	// Override functions for custom behavior.
 	AddNATMasqueradeFn           func(iface, subnet string) error
@@ -25,6 +26,8 @@ type MockNFTManager struct {
 	DisableInterPeerForwardingFn func(iface string) error
 	AddNetworkBridgeFn           func(ifaceA, ifaceB, direction string) error
 	RemoveNetworkBridgeFn        func(ifaceA, ifaceB string) error
+	OpenUDPPortFn                func(port int) error
+	CloseUDPPortFn               func(port int) error
 	DumpRulesFn                  func() (string, error)
 }
 
@@ -34,6 +37,7 @@ func NewMockNFTManager() *MockNFTManager {
 		NATRules:     make(map[string]string),
 		ForwardRules: make(map[string]bool),
 		BridgeRules:  make(map[string]string),
+		UDPPorts:     make(map[int]bool),
 	}
 }
 
@@ -101,6 +105,28 @@ func (m *MockNFTManager) RemoveNetworkBridge(ifaceA, ifaceB string) error {
 	m.mu.Unlock()
 	if m.RemoveNetworkBridgeFn != nil {
 		return m.RemoveNetworkBridgeFn(ifaceA, ifaceB)
+	}
+	return nil
+}
+
+func (m *MockNFTManager) OpenUDPPort(port int) error {
+	m.mu.Lock()
+	m.Calls = append(m.Calls, MockCall{Method: "OpenUDPPort", Args: []any{port}})
+	m.UDPPorts[port] = true
+	m.mu.Unlock()
+	if m.OpenUDPPortFn != nil {
+		return m.OpenUDPPortFn(port)
+	}
+	return nil
+}
+
+func (m *MockNFTManager) CloseUDPPort(port int) error {
+	m.mu.Lock()
+	m.Calls = append(m.Calls, MockCall{Method: "CloseUDPPort", Args: []any{port}})
+	delete(m.UDPPorts, port)
+	m.mu.Unlock()
+	if m.CloseUDPPortFn != nil {
+		return m.CloseUDPPortFn(port)
 	}
 	return nil
 }

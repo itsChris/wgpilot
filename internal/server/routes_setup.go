@@ -478,6 +478,19 @@ func (s *Server) handleSetupStep3(w http.ResponseWriter, r *http.Request) {
 
 	// Apply nftables rules.
 	if s.nftManager != nil {
+		// Open the UDP listen port in the firewall.
+		if portErr := s.nftManager.OpenUDPPort(req.ListenPort); portErr != nil {
+			s.logger.Error("setup_step3_open_port_failed",
+				"error", portErr,
+				"port", req.ListenPort,
+				"component", "setup",
+			)
+			if s.wgManager != nil {
+				s.wgManager.DeleteInterface(ctx, ifaceName)
+			}
+			writeError(w, r, fmt.Errorf("failed to open firewall port"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+			return
+		}
 		if req.NATEnabled {
 			if natErr := s.nftManager.AddNATMasquerade(ifaceName, req.Subnet); natErr != nil {
 				s.logger.Error("setup_step3_nat_failed",
@@ -907,4 +920,115 @@ func detectPublicIP(ctx context.Context) string {
 func (s *Server) handleDetectPublicIP(w http.ResponseWriter, r *http.Request) {
 	ip := detectPublicIP(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"public_ip": ip})
+}
+
+// handleImportConfig imports a wg-quick configuration file.
+func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req struct {
+		Config string `json:"config"`
+		Name   string `json:"name"`
+	}
+	if code, status, err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err, code, status, s.devMode)
+		return
+	}
+
+	if req.Config == "" {
+		writeError(w, r, fmt.Errorf("config content is required"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+	if req.Name == "" {
+		req.Name = "Imported Network"
+	}
+
+	parsed, err := wg.ParseWgQuickConfig(strings.NewReader(req.Config))
+	if err != nil {
+		writeError(w, r, fmt.Errorf("failed to parse config: %v", err), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	// Derive public key from private key.
+	pubKey, err := wg.PublicKeyFromPrivate(parsed.PrivateKey)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid private key in config"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	listenPort := parsed.ListenPort
+	if listenPort == 0 {
+		listenPort = 51820
+	}
+
+	subnet := parsed.Address
+	if subnet == "" {
+		writeError(w, r, fmt.Errorf("no Address in [Interface] section"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	// Determine interface name.
+	networks, err := s.db.ListNetworks(ctx)
+	if err != nil {
+		s.logger.Error("import_list_networks_failed", "error", err, "component", "handler")
+		writeError(w, r, fmt.Errorf("internal error"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	ifaceName := s.nextInterfaceName(networks)
+
+	network := &db.Network{
+		Name:       req.Name,
+		Interface:  ifaceName,
+		Mode:       "gateway",
+		Subnet:     subnet,
+		ListenPort: listenPort,
+		PrivateKey: parsed.PrivateKey,
+		PublicKey:  pubKey,
+		DNSServers: parsed.DNSServers,
+		Enabled:    true,
+	}
+
+	netID, err := s.db.CreateNetwork(ctx, network)
+	if err != nil {
+		s.logger.Error("import_create_network_failed", "error", err, "component", "handler")
+		writeError(w, r, fmt.Errorf("failed to create network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Import peers.
+	var importedPeers int
+	for i, p := range parsed.Peers {
+		peerName := fmt.Sprintf("Imported Peer %d", i+1)
+		peer := &db.Peer{
+			NetworkID:           netID,
+			Name:                peerName,
+			PublicKey:           p.PublicKey,
+			PresharedKey:        p.PresharedKey,
+			AllowedIPs:          p.AllowedIPs,
+			Endpoint:            p.Endpoint,
+			PersistentKeepalive: p.PersistentKeepalive,
+			Role:                "client",
+			Enabled:             true,
+		}
+		if _, err := s.db.CreatePeer(ctx, peer); err != nil {
+			s.logger.Error("import_create_peer_failed", "error", err, "component", "handler", "peer_index", i)
+			continue
+		}
+		importedPeers++
+	}
+
+	s.logger.Info("config_imported",
+		"network_id", netID,
+		"network_name", req.Name,
+		"interface", ifaceName,
+		"peers_imported", importedPeers,
+		"component", "handler",
+	)
+	s.auditf(r, "network.imported", "network", "imported network %q (id=%d) with %d peers", req.Name, netID, importedPeers)
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"network_id":     netID,
+		"interface":      ifaceName,
+		"peers_imported": importedPeers,
+	})
 }

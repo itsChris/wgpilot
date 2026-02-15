@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/itsChris/wgpilot/internal/logging"
@@ -19,6 +20,9 @@ type DB struct {
 	conn    *sql.DB
 	logger  *slog.Logger
 	devMode bool
+
+	encryptionKey    *[32]byte
+	encryptionKeySet bool
 }
 
 // New opens a SQLite database and configures WAL mode, foreign keys,
@@ -27,6 +31,17 @@ func New(ctx context.Context, dsn string, logger *slog.Logger, devMode bool) (*D
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", dsn, err)
+	}
+
+	// Restrict file permissions for non-memory databases.
+	if dsn != ":memory:" {
+		if err := os.Chmod(dsn, 0640); err != nil && !os.IsNotExist(err) {
+			logger.Warn("db_chmod_failed",
+				"error", err,
+				"dsn", dsn,
+				"component", "db",
+			)
+		}
 	}
 
 	// Single writer connection for SQLite.
@@ -54,6 +69,31 @@ func New(ctx context.Context, dsn string, logger *slog.Logger, devMode bool) (*D
 		logger:  logger,
 		devMode: devMode,
 	}, nil
+}
+
+// SetEncryptionKey sets the key used to encrypt/decrypt private keys stored in the database.
+func (d *DB) SetEncryptionKey(key [32]byte) {
+	d.encryptionKey = &key
+	d.encryptionKeySet = true
+}
+
+// Open opens a SQLite database with minimal configuration, without running
+// migrations. This is used by CLI tools that need read-only access. If
+// readOnly is true, the database is opened in read-only mode.
+func Open(dsn string, readOnly bool, logger *slog.Logger) (*DB, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	}
+	uri := dsn
+	if readOnly {
+		uri += "?mode=ro"
+	}
+	conn, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, fmt.Errorf("db: open %s: %w", dsn, err)
+	}
+	conn.SetMaxOpenConns(1)
+	return &DB{conn: conn, logger: logger}, nil
 }
 
 // Close closes the underlying database connection.
@@ -165,6 +205,15 @@ func (d *DB) TableCounts(ctx context.Context, tables []string) map[string]int64 
 		}
 	}
 	return counts
+}
+
+// VacuumInto creates a backup of the database at the given path using VACUUM INTO.
+func (d *DB) VacuumInto(ctx context.Context, path string) error {
+	_, err := d.conn.ExecContext(ctx, "VACUUM INTO ?", path)
+	if err != nil {
+		return fmt.Errorf("db: vacuum into %s: %w", path, err)
+	}
+	return nil
 }
 
 // IntegrityCheck runs PRAGMA integrity_check and returns the result.

@@ -55,6 +55,51 @@ func (d *DB) GetUserByUsername(ctx context.Context, username string) (*User, err
 	return u, nil
 }
 
+// UpdateUserPassword updates a user's password hash.
+func (d *DB) UpdateUserPassword(ctx context.Context, userID int64, passwordHash string) error {
+	_, err := d.ExecContext(ctx, `
+		UPDATE users SET password_hash = ?, updated_at = unixepoch()
+		WHERE id = ?`, passwordHash, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update user %d password: %w", userID, err)
+	}
+	return nil
+}
+
+// ListUsers returns all users.
+func (d *DB) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := d.QueryContext(ctx, `
+		SELECT id, username, password_hash, role, created_at, updated_at
+		FROM users ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("db: list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var u User
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan user: %w", err)
+		}
+		u.CreatedAt = time.Unix(createdAt, 0)
+		u.UpdatedAt = time.Unix(updatedAt, 0)
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// DeleteUser deletes a user by ID.
+func (d *DB) DeleteUser(ctx context.Context, id int64) error {
+	_, err := d.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("db: delete user %d: %w", id, err)
+	}
+	return nil
+}
+
 // GetUserByID retrieves a user by ID.
 // Returns nil, nil if the user does not exist.
 func (d *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {

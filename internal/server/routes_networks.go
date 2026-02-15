@@ -279,6 +279,21 @@ func (s *Server) handleCreateNetwork(w http.ResponseWriter, r *http.Request) {
 
 	// Apply nftables rules.
 	if s.nftManager != nil {
+		// Open the UDP listen port in the firewall.
+		if err := s.nftManager.OpenUDPPort(req.ListenPort); err != nil {
+			s.logger.Error("open_udp_port_failed",
+				"error", err,
+				"error_type", fmt.Sprintf("%T", err),
+				"operation", "create_network",
+				"component", "handler",
+				"port", req.ListenPort,
+			)
+			if s.wgManager != nil {
+				s.wgManager.DeleteInterface(ctx, ifaceName)
+			}
+			writeError(w, r, fmt.Errorf("failed to open firewall port"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+			return
+		}
 		if req.NATEnabled {
 			if err := s.nftManager.AddNATMasquerade(ifaceName, req.Subnet); err != nil {
 				s.logger.Error("add_nat_failed",
@@ -351,6 +366,7 @@ func (s *Server) handleCreateNetwork(w http.ResponseWriter, r *http.Request) {
 		"mode", created.Mode,
 		"component", "handler",
 	)
+	s.auditf(r, "network.created", "network", "created network %q (id=%d, iface=%s)", created.Name, id, created.Interface)
 
 	writeJSON(w, http.StatusCreated, networkToResponse(created))
 }
@@ -572,6 +588,7 @@ func (s *Server) handleUpdateNetwork(w http.ResponseWriter, r *http.Request) {
 		"network_name", updated.Name,
 		"component", "handler",
 	)
+	s.auditf(r, "network.updated", "network", "updated network %q (id=%d)", updated.Name, id)
 
 	writeJSON(w, http.StatusOK, networkToResponse(updated))
 }
@@ -638,6 +655,16 @@ func (s *Server) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 
 	// Remove nftables rules.
 	if s.nftManager != nil {
+		// Close the UDP listen port in the firewall.
+		if err := s.nftManager.CloseUDPPort(network.ListenPort); err != nil {
+			s.logger.Error("close_udp_port_failed",
+				"error", err,
+				"operation", "delete_network",
+				"component", "handler",
+				"network_id", id,
+				"port", network.ListenPort,
+			)
+		}
 		if network.NATEnabled {
 			if err := s.nftManager.RemoveNATMasquerade(network.Interface); err != nil {
 				s.logger.Error("remove_nat_failed",
@@ -694,8 +721,247 @@ func (s *Server) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		"interface", network.Interface,
 		"component", "handler",
 	)
+	s.auditf(r, "network.deleted", "network", "deleted network %q (id=%d, iface=%s)", network.Name, id, network.Interface)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleEnableNetwork enables a network and creates its WireGuard interface.
+func (s *Server) handleEnableNetwork(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, id)
+	if err != nil {
+		s.logger.Error("get_network_failed", "error", err, "operation", "enable_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to get network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", id), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	if network.Enabled {
+		writeJSON(w, http.StatusOK, networkToResponse(network))
+		return
+	}
+
+	// Create WireGuard interface.
+	if s.wgManager != nil {
+		netCfg := wg.NetworkConfig{
+			Interface:  network.Interface,
+			Subnet:     network.Subnet,
+			ListenPort: network.ListenPort,
+			PrivateKey: network.PrivateKey,
+			PublicKey:  network.PublicKey,
+		}
+		if err := s.wgManager.CreateInterface(ctx, netCfg); err != nil {
+			s.logger.Error("create_interface_failed", "error", err, "operation", "enable_network", "component", "handler", "network_id", id)
+			writeError(w, r, fmt.Errorf("failed to create WireGuard interface"), apperr.ErrInterfaceCreateFailed, http.StatusInternalServerError, s.devMode)
+			return
+		}
+
+		// Add all enabled peers.
+		peers, err := s.db.ListPeersByNetworkID(ctx, id)
+		if err != nil {
+			s.logger.Error("list_peers_failed", "error", err, "operation", "enable_network", "component", "handler", "network_id", id)
+		} else {
+			for _, p := range peers {
+				if !p.Enabled {
+					continue
+				}
+				peerCfg := wg.PeerConfig{
+					Name:                p.Name,
+					PublicKey:           p.PublicKey,
+					PresharedKey:        p.PresharedKey,
+					AllowedIPs:          p.AllowedIPs,
+					Endpoint:            p.Endpoint,
+					PersistentKeepalive: p.PersistentKeepalive,
+				}
+				if addErr := s.wgManager.AddPeer(ctx, network.Interface, peerCfg); addErr != nil {
+					s.logger.Error("add_peer_failed", "error", addErr, "operation", "enable_network", "component", "handler", "peer_id", p.ID)
+				}
+			}
+		}
+	}
+
+	// Restore nftables rules.
+	if s.nftManager != nil {
+		if err := s.nftManager.OpenUDPPort(network.ListenPort); err != nil {
+			s.logger.Error("open_udp_port_failed", "error", err, "operation", "enable_network", "component", "handler")
+		}
+		if network.NATEnabled {
+			if err := s.nftManager.AddNATMasquerade(network.Interface, network.Subnet); err != nil {
+				s.logger.Error("add_nat_failed", "error", err, "operation", "enable_network", "component", "handler")
+			}
+		}
+		if network.InterPeerRouting {
+			if err := s.nftManager.EnableInterPeerForwarding(network.Interface); err != nil {
+				s.logger.Error("enable_forwarding_failed", "error", err, "operation", "enable_network", "component", "handler")
+			}
+		}
+	}
+
+	network.Enabled = true
+	if err := s.db.UpdateNetwork(ctx, network); err != nil {
+		s.logger.Error("update_network_failed", "error", err, "operation", "enable_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to update network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	updated, _ := s.db.GetNetworkByID(ctx, id)
+	if updated == nil {
+		updated = network
+	}
+
+	s.logger.Info("network_enabled", "network_id", id, "network_name", network.Name, "component", "handler")
+	s.auditf(r, "network.enabled", "network", "enabled network %q (id=%d)", network.Name, id)
+	writeJSON(w, http.StatusOK, networkToResponse(updated))
+}
+
+// handleDisableNetwork disables a network and tears down its WireGuard interface.
+func (s *Server) handleDisableNetwork(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, id)
+	if err != nil {
+		s.logger.Error("get_network_failed", "error", err, "operation", "disable_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to get network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", id), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	if !network.Enabled {
+		writeJSON(w, http.StatusOK, networkToResponse(network))
+		return
+	}
+
+	// Remove nftables rules.
+	if s.nftManager != nil {
+		if err := s.nftManager.CloseUDPPort(network.ListenPort); err != nil {
+			s.logger.Error("close_udp_port_failed", "error", err, "operation", "disable_network", "component", "handler")
+		}
+		if network.NATEnabled {
+			if err := s.nftManager.RemoveNATMasquerade(network.Interface); err != nil {
+				s.logger.Error("remove_nat_failed", "error", err, "operation", "disable_network", "component", "handler")
+			}
+		}
+		if network.InterPeerRouting {
+			if err := s.nftManager.DisableInterPeerForwarding(network.Interface); err != nil {
+				s.logger.Error("disable_forwarding_failed", "error", err, "operation", "disable_network", "component", "handler")
+			}
+		}
+	}
+
+	// Delete WireGuard interface.
+	if s.wgManager != nil {
+		if err := s.wgManager.DeleteInterface(ctx, network.Interface); err != nil {
+			s.logger.Error("delete_interface_failed", "error", err, "operation", "disable_network", "component", "handler", "network_id", id)
+		}
+	}
+
+	network.Enabled = false
+	if err := s.db.UpdateNetwork(ctx, network); err != nil {
+		s.logger.Error("update_network_failed", "error", err, "operation", "disable_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to update network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	updated, _ := s.db.GetNetworkByID(ctx, id)
+	if updated == nil {
+		updated = network
+	}
+
+	s.logger.Info("network_disabled", "network_id", id, "network_name", network.Name, "component", "handler")
+	s.auditf(r, "network.disabled", "network", "disabled network %q (id=%d)", network.Name, id)
+	writeJSON(w, http.StatusOK, networkToResponse(updated))
+}
+
+// handleExportNetwork generates a wg-quick compatible .conf file for a network.
+func (s *Server) handleExportNetwork(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		return
+	}
+
+	network, err := s.db.GetNetworkByID(ctx, id)
+	if err != nil {
+		s.logger.Error("get_network_failed", "error", err, "operation", "export_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to get network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+	if network == nil {
+		writeError(w, r, fmt.Errorf("network %d not found", id), apperr.ErrNetworkNotFound, http.StatusNotFound, s.devMode)
+		return
+	}
+
+	peers, err := s.db.ListPeersByNetworkID(ctx, id)
+	if err != nil {
+		s.logger.Error("list_peers_failed", "error", err, "operation", "export_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to list peers"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	// Compute server address: first IP in subnet.
+	_, subnet, _ := net.ParseCIDR(network.Subnet)
+	serverIP := make(net.IP, len(subnet.IP))
+	copy(serverIP, subnet.IP)
+	serverIP[len(serverIP)-1]++ // .1
+	ones, _ := subnet.Mask.Size()
+	serverAddress := fmt.Sprintf("%s/%d", serverIP, ones)
+
+	var exportPeers []wg.ExportPeer
+	for _, p := range peers {
+		if !p.Enabled {
+			continue
+		}
+		exportPeers = append(exportPeers, wg.ExportPeer{
+			Name:                p.Name,
+			PublicKey:           p.PublicKey,
+			PresharedKey:        p.PresharedKey,
+			AllowedIPs:          p.AllowedIPs,
+			Endpoint:            p.Endpoint,
+			PersistentKeepalive: p.PersistentKeepalive,
+		})
+	}
+
+	conf, err := wg.GenerateServerConfig(wg.ServerConfigParams{
+		InterfaceName: network.Interface,
+		PrivateKey:    network.PrivateKey,
+		Address:       serverAddress,
+		ListenPort:    network.ListenPort,
+		DNSServers:    network.DNSServers,
+		NATEnabled:    network.NATEnabled,
+		Peers:         exportPeers,
+	})
+	if err != nil {
+		s.logger.Error("generate_server_config_failed", "error", err, "operation", "export_network", "component", "handler", "network_id", id)
+		writeError(w, r, fmt.Errorf("failed to generate config"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.conf"`, network.Interface))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(conf))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ const (
 	ErrInvalidAllowedIPs = "INVALID_ALLOWED_IPS"
 
 	// Auth errors
+	ErrForbidden          = "FORBIDDEN"
 	ErrUnauthorized       = "UNAUTHORIZED"
 	ErrSessionExpired     = "SESSION_EXPIRED"
 	ErrInvalidCredentials = "INVALID_CREDENTIALS"
@@ -37,6 +38,9 @@ const (
 	ErrBridgeNotFound      = "BRIDGE_NOT_FOUND"
 	ErrBridgeAlreadyExists = "BRIDGE_ALREADY_EXISTS"
 	ErrBridgeSelfReference = "BRIDGE_SELF_REFERENCE"
+
+	// Alert errors
+	ErrAlertNotFound = "ALERT_NOT_FOUND"
 
 	// General
 	ErrValidation = "VALIDATION_ERROR"
