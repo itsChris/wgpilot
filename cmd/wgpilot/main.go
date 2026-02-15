@@ -23,6 +23,8 @@ import (
 	"github.com/itsChris/wgpilot/internal/monitor"
 	"github.com/itsChris/wgpilot/internal/sdnotify"
 	"github.com/itsChris/wgpilot/internal/server"
+	wgtls "github.com/itsChris/wgpilot/internal/tls"
+	"github.com/itsChris/wgpilot/internal/updater"
 	"github.com/spf13/cobra"
 )
 
@@ -188,9 +190,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create server: %w", err)
 	}
 
+	// ── Configure TLS ───────────────────────────────────────────────
+	dataDir := filepath.Dir(cfg.Database.Path)
+	tlsMgr, err := wgtls.NewManager(wgtls.Config{
+		Mode:     cfg.TLS.Mode,
+		Domain:   cfg.TLS.ACMEDomain,
+		Email:    cfg.TLS.ACMEEmail,
+		CertFile: cfg.TLS.CertFile,
+		KeyFile:  cfg.TLS.KeyFile,
+		DataDir:  dataDir,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("configure tls: %w", err)
+	}
+
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Listen,
 		Handler:      srv,
+		TLSConfig:    tlsMgr.TLSConfig(),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -241,12 +258,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("http_listening",
+		logger.Info("https_listening",
 			"addr", cfg.Server.Listen,
+			"tls_mode", string(tlsMgr.ActiveMode()),
 			"component", "main",
 		)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- fmt.Errorf("http listen: %w", err)
+		// TLSConfig is already set on the server; pass empty cert/key
+		// so ListenAndServeTLS uses the server's TLSConfig.
+		if err := httpServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("https listen: %w", err)
 		}
 	}()
 
@@ -501,12 +521,49 @@ func newConfigCmd() *cobra.Command {
 }
 
 func newUpdateCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update wgpilot to the latest version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
+			checkOnly, _ := cmd.Flags().GetBool("check")
+			logger := logging.New(logging.Config{Level: slog.LevelInfo})
+
+			u, err := updater.NewUpdater(logger)
+			if err != nil {
+				return fmt.Errorf("create updater: %w", err)
+			}
+
+			ctx := context.Background()
+
+			if checkOnly {
+				result, err := u.CheckLatest(ctx, version)
+				if err != nil {
+					return fmt.Errorf("check for updates: %w", err)
+				}
+				if result.UpdateAvailable {
+					fmt.Printf("Update available: %s -> %s\n", result.CurrentVersion, result.LatestVersion)
+					fmt.Printf("Release: %s\n", result.ReleaseURL)
+				} else {
+					fmt.Printf("Already up to date (version %s)\n", result.CurrentVersion)
+				}
+				return nil
+			}
+
+			result, err := u.Update(ctx, version)
+			if err != nil {
+				return fmt.Errorf("update: %w", err)
+			}
+
+			if !result.UpdateAvailable {
+				fmt.Printf("Already up to date (version %s)\n", result.CurrentVersion)
+				return nil
+			}
+
+			fmt.Printf("Updated to version %s\n", result.LatestVersion)
+			fmt.Println("Restart the service to apply: systemctl restart wgpilot")
 			return nil
 		},
 	}
+	cmd.Flags().Bool("check", false, "only check for updates, don't install")
+	return cmd
 }
