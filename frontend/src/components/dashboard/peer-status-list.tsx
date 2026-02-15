@@ -43,9 +43,9 @@ export function PeerStatusList() {
                   <p className="text-sm text-muted-foreground">No peers</p>
                 ) : (
                   <div className="space-y-2">
-                    {(net.peers ?? []).map((peer) => (
+                    {(net.peers ?? []).map((peer, idx) => (
                       <div
-                        key={peer.peer_id}
+                        key={peer.peer_id || idx}
                         className="flex items-center gap-3 rounded-md border p-3"
                       >
                         <span
@@ -55,7 +55,7 @@ export function PeerStatusList() {
                         />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">
-                            Peer #{peer.peer_id}
+                            {peer.name || `Peer #${peer.peer_id}`}
                           </p>
                           <p className="text-xs text-muted-foreground">
                             {formatRelativeTime(peer.last_handshake)}

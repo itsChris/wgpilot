@@ -25,6 +25,7 @@ import (
 	"github.com/itsChris/wgpilot/internal/debug"
 	"github.com/itsChris/wgpilot/internal/logging"
 	"github.com/itsChris/wgpilot/internal/monitor"
+	"github.com/itsChris/wgpilot/internal/nft"
 	"github.com/itsChris/wgpilot/internal/sdnotify"
 	"github.com/itsChris/wgpilot/internal/server"
 	wgtls "github.com/itsChris/wgpilot/internal/tls"
@@ -215,6 +216,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// ── Create nftables manager ──────────────────────────────────────
+	var nftMgr *nft.Manager
+	nftMgr, err = nft.NewManager(nft.NewApplier(), logger, cfg.Server.DevMode)
+	if err != nil {
+		logger.Warn("nftables_manager_init_failed",
+			"error", err,
+			"component", "main",
+		)
+	}
+
 	// ── Create HTTP server ───────────────────────────────────────────
 	srv, err := server.New(server.Config{
 		DB:          database,
@@ -223,6 +234,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Sessions:    sessions,
 		RateLimiter: rateLimiter,
 		WGManager:   wgMgr,
+		NFTManager:  nftMgr,
 		DevMode:     cfg.Server.DevMode,
 		Ring:        ring,
 		Version:     version,

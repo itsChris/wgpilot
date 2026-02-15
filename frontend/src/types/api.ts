@@ -57,6 +57,8 @@ export type UpdatePeerRequest = Partial<CreatePeerRequest>;
 
 export interface PeerStatus {
   peer_id: number;
+  name: string;
+  public_key: string;
   online: boolean;
   last_handshake: number;
   transfer_rx: number;

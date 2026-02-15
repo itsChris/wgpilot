@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -27,7 +28,7 @@ type networkStatus struct {
 }
 
 type peerStatus struct {
-	ID            int64  `json:"id"`
+	ID            int64  `json:"peer_id"`
 	Name          string `json:"name"`
 	PublicKey     string `json:"public_key"`
 	Endpoint      string `json:"endpoint"`
@@ -300,10 +301,26 @@ func (s *Server) sendSSEStatus(w http.ResponseWriter, rc *http.ResponseControlle
 		return
 	}
 
+	// Build public_key → peer ID map from DB.
+	type peerInfo struct {
+		id   int64
+		name string
+	}
+	peerByKey := make(map[string]peerInfo)
+	if peers, err := s.db.ListPeersByNetworkID(context.Background(), networkID); err == nil {
+		for _, p := range peers {
+			peerByKey[p.PublicKey] = peerInfo{id: p.ID, name: p.Name}
+		}
+	}
+
 	events := make([]map[string]any, 0, len(statuses))
 	for _, st := range statuses {
+		var peerID int64
+		if info, ok := peerByKey[st.PublicKey]; ok {
+			peerID = info.id
+		}
 		events = append(events, map[string]any{
-			"peer_id":        0, // will be enriched by frontend via cache
+			"peer_id":        peerID,
 			"online":         st.Online,
 			"last_handshake": st.LastHandshake.Unix(),
 			"transfer_rx":    st.TransferRx,

@@ -45,6 +45,10 @@ type peerResponse struct {
 	Role                string `json:"role"`
 	SiteNetworks        string `json:"site_networks"`
 	Enabled             bool   `json:"enabled"`
+	Online              bool   `json:"online"`
+	LastHandshake       int64  `json:"last_handshake"`
+	TransferRx          int64  `json:"transfer_rx"`
+	TransferTx          int64  `json:"transfer_tx"`
 	ExpiresAt           *int64 `json:"expires_at"`
 	CreatedAt           int64  `json:"created_at"`
 	UpdatedAt           int64  `json:"updated_at"`
@@ -399,9 +403,37 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch live WireGuard status to enrich peer responses.
+	type liveStatus struct {
+		Online        bool
+		LastHandshake int64
+		TransferRx    int64
+		TransferTx    int64
+	}
+	statusByKey := make(map[string]liveStatus)
+	if s.wgManager != nil && network.Enabled {
+		if statuses, err := s.wgManager.PeerStatus(network.Interface); err == nil {
+			for _, st := range statuses {
+				statusByKey[st.PublicKey] = liveStatus{
+					Online:        st.Online,
+					LastHandshake: st.LastHandshake.Unix(),
+					TransferRx:    st.TransferRx,
+					TransferTx:    st.TransferTx,
+				}
+			}
+		}
+	}
+
 	result := make([]peerResponse, 0, len(peers))
 	for _, p := range peers {
-		result = append(result, peerToResponse(&p))
+		resp := peerToResponse(&p)
+		if st, ok := statusByKey[p.PublicKey]; ok {
+			resp.Online = st.Online
+			resp.LastHandshake = st.LastHandshake
+			resp.TransferRx = st.TransferRx
+			resp.TransferTx = st.TransferTx
+		}
+		result = append(result, resp)
 	}
 
 	writeJSON(w, http.StatusOK, result)

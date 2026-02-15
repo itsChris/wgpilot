@@ -17,12 +17,14 @@ export function useSSE(networkId: number) {
     eventSourceRef.current = es;
 
     es.addEventListener('status', (event) => {
-      const statuses: PeerStatus[] = JSON.parse(event.data);
+      const statuses: (PeerStatus & { public_key?: string })[] = JSON.parse(event.data);
       queryClient.setQueryData<Peer[]>(
         peerKeys.list(networkId),
         (old) =>
           old?.map((p) => {
-            const update = statuses.find((s) => s.peer_id === p.id);
+            const update = statuses.find(
+              (s) => s.public_key === p.public_key || (s.peer_id > 0 && s.peer_id === p.id),
+            );
             return update
               ? {
                   ...p,
