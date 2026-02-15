@@ -105,6 +105,30 @@ export interface TransferStats {
   transfer_tx: number;
 }
 
+// ── Bridge types ────────────────────────────────────────────────────
+
+export interface Bridge {
+  id: number;
+  network_a_id: number;
+  network_b_id: number;
+  network_a_name: string;
+  network_b_name: string;
+  interface_a: string;
+  interface_b: string;
+  direction: 'a_to_b' | 'b_to_a' | 'bidirectional';
+  allowed_cidrs: string;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateBridgeRequest {
+  network_a_id: number;
+  network_b_id: number;
+  direction: 'a_to_b' | 'b_to_a' | 'bidirectional';
+  allowed_cidrs?: string;
+}
+
 // ── Setup wizard types ──────────────────────────────────────────────
 
 export interface SetupStatusResponse {

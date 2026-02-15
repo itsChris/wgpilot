@@ -318,6 +318,66 @@ func formatIPNets(nets []net.IPNet) string {
 	return s
 }
 
+// ReconcileBridges reconciles bridge nftables rules against the database.
+// It uses the NFTableManager interface to add bridge forwarding rules for
+// all enabled bridges. This is separate from WG device reconciliation because
+// bridge rules span nft (not wg) and the two packages are independent.
+func ReconcileBridges(ctx context.Context, store NetworkStore, nftMgr interface {
+	AddNetworkBridge(ifaceA, ifaceB, direction string) error
+}, logger *slog.Logger) error {
+	l := logger.With("component", "reconcile_bridges")
+
+	bridges, err := store.ListBridges(ctx)
+	if err != nil {
+		l.Error("list_bridges_failed",
+			"error", err,
+			"operation", "reconcile_bridges",
+		)
+		return fmt.Errorf("reconcile bridges: list bridges: %w", err)
+	}
+
+	if len(bridges) == 0 {
+		l.Debug("no_bridges_to_reconcile", "operation", "reconcile_bridges")
+		return nil
+	}
+
+	for _, bridge := range bridges {
+		if !bridge.Enabled {
+			l.Debug("reconcile_bridge_disabled",
+				"bridge_id", bridge.ID,
+				"interface_a", bridge.InterfaceA,
+				"interface_b", bridge.InterfaceB,
+				"operation", "reconcile_bridges",
+			)
+			continue
+		}
+
+		l.Info("reconcile_bridge_apply",
+			"bridge_id", bridge.ID,
+			"interface_a", bridge.InterfaceA,
+			"interface_b", bridge.InterfaceB,
+			"direction", bridge.Direction,
+			"operation", "reconcile_bridges",
+		)
+
+		if err := nftMgr.AddNetworkBridge(bridge.InterfaceA, bridge.InterfaceB, bridge.Direction); err != nil {
+			l.Error("reconcile_bridge_add_failed",
+				"error", err,
+				"bridge_id", bridge.ID,
+				"interface_a", bridge.InterfaceA,
+				"interface_b", bridge.InterfaceB,
+				"operation", "reconcile_bridges",
+			)
+		}
+	}
+
+	l.Info("reconcile_bridges_complete",
+		"bridge_count", len(bridges),
+		"operation", "reconcile_bridges",
+	)
+	return nil
+}
+
 // contextForReconcile creates a context with a reconcile task ID.
 func ContextForReconcile(ctx context.Context) context.Context {
 	return logging.WithTaskID(ctx, logging.GenerateTaskID("reconcile"))

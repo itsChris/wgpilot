@@ -1,8 +1,10 @@
 import { useParams } from '@tanstack/react-router';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useNetwork } from '@/api/networks';
 import { PeerTable } from '@/components/peers/peer-table';
+import { BridgeList } from '@/components/bridges/bridge-list';
 import { modeLabel } from '@/lib/format';
 
 export function NetworkDetailPage() {
@@ -45,6 +47,10 @@ export function NetworkDetailPage() {
       </div>
 
       <PeerTable networkId={id} />
+
+      <Separator />
+
+      <BridgeList networkId={id} />
     </div>
   );
 }

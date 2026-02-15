@@ -33,6 +33,11 @@ const (
 	ErrNFTablesUnavailable = "NFTABLES_UNAVAILABLE"
 	ErrDatabaseCorrupted   = "DATABASE_CORRUPTED"
 
+	// Bridge errors
+	ErrBridgeNotFound      = "BRIDGE_NOT_FOUND"
+	ErrBridgeAlreadyExists = "BRIDGE_ALREADY_EXISTS"
+	ErrBridgeSelfReference = "BRIDGE_SELF_REFERENCE"
+
 	// General
 	ErrValidation = "VALIDATION_ERROR"
 	ErrInternal   = "INTERNAL_ERROR"

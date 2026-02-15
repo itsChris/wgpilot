@@ -176,6 +176,7 @@ func (m *MockLinkManager) CallMethods() []string {
 type MockNetworkStore struct {
 	ListNetworksFn         func(ctx context.Context) ([]wg.NetworkConfig, error)
 	ListPeersByNetworkIDFn func(ctx context.Context, networkID int64) ([]wg.PeerConfig, error)
+	ListBridgesFn          func(ctx context.Context) ([]wg.BridgeConfig, error)
 }
 
 func (m *MockNetworkStore) ListNetworks(ctx context.Context) ([]wg.NetworkConfig, error) {
@@ -188,6 +189,13 @@ func (m *MockNetworkStore) ListNetworks(ctx context.Context) ([]wg.NetworkConfig
 func (m *MockNetworkStore) ListPeersByNetworkID(ctx context.Context, networkID int64) ([]wg.PeerConfig, error) {
 	if m.ListPeersByNetworkIDFn != nil {
 		return m.ListPeersByNetworkIDFn(ctx, networkID)
+	}
+	return nil, nil
+}
+
+func (m *MockNetworkStore) ListBridges(ctx context.Context) ([]wg.BridgeConfig, error) {
+	if m.ListBridgesFn != nil {
+		return m.ListBridgesFn(ctx)
 	}
 	return nil, nil
 }

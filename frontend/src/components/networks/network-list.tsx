@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
-import { Plus, MoreVertical, Trash2, Pencil, Power } from 'lucide-react';
+import { Plus, MoreVertical, Trash2, Pencil, Power, ArrowLeftRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,12 +12,14 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useNetworks, useDeleteNetwork, useToggleNetwork } from '@/api/networks';
+import { useBridges } from '@/api/bridges';
 import { modeLabel } from '@/lib/format';
 import { NetworkForm } from './network-form';
 import type { Network } from '@/types/api';
 
 export function NetworkList() {
   const { data: networks, isLoading } = useNetworks();
+  const { data: bridges } = useBridges();
   const deleteMutation = useDeleteNetwork();
   const [formOpen, setFormOpen] = useState(false);
   const [editingNetwork, setEditingNetwork] = useState<Network | null>(null);
@@ -69,14 +71,20 @@ export function NetworkList() {
         </Card>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {networks.map((net) => (
-            <NetworkCard
-              key={net.id}
-              network={net}
-              onEdit={handleEdit}
-              onDelete={() => deleteMutation.mutate(net.id)}
-            />
-          ))}
+          {networks.map((net) => {
+            const bridgeCount = bridges?.filter(
+              (b) => b.network_a_id === net.id || b.network_b_id === net.id,
+            ).length ?? 0;
+            return (
+              <NetworkCard
+                key={net.id}
+                network={net}
+                bridgeCount={bridgeCount}
+                onEdit={handleEdit}
+                onDelete={() => deleteMutation.mutate(net.id)}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -91,10 +99,12 @@ export function NetworkList() {
 
 function NetworkCard({
   network,
+  bridgeCount,
   onEdit,
   onDelete,
 }: {
   network: Network;
+  bridgeCount: number;
   onEdit: (net: Network) => void;
   onDelete: () => void;
 }) {
@@ -147,6 +157,12 @@ function NetworkCard({
               {network.enabled ? 'Active' : 'Disabled'}
             </Badge>
             <Badge variant="outline">{modeLabel(network.mode)}</Badge>
+            {bridgeCount > 0 && (
+              <Badge variant="outline" className="gap-1">
+                <ArrowLeftRight className="h-3 w-3" />
+                {bridgeCount}
+              </Badge>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-1 text-sm text-muted-foreground">
             <span>Subnet:</span>

@@ -588,6 +588,39 @@ func (s *Server) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Remove bridge nftables rules before DB cascade deletes them.
+	if s.nftManager != nil {
+		bridges, err := s.db.ListBridgesByNetworkID(ctx, id)
+		if err != nil {
+			s.logger.Error("list_bridges_for_delete_failed",
+				"error", err,
+				"operation", "delete_network",
+				"component", "handler",
+				"network_id", id,
+			)
+		} else {
+			for _, bridge := range bridges {
+				otherID := bridge.NetworkBID
+				if otherID == id {
+					otherID = bridge.NetworkAID
+				}
+				other, err := s.db.GetNetworkByID(ctx, otherID)
+				if err != nil || other == nil {
+					continue
+				}
+				if err := s.nftManager.RemoveNetworkBridge(network.Interface, other.Interface); err != nil {
+					s.logger.Error("remove_bridge_nft_failed",
+						"error", err,
+						"operation", "delete_network",
+						"component", "handler",
+						"network_id", id,
+						"bridge_id", bridge.ID,
+					)
+				}
+			}
+		}
+	}
+
 	// Remove nftables rules.
 	if s.nftManager != nil {
 		if network.NATEnabled {

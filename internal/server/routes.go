@@ -69,11 +69,11 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/qr", guarded(http.HandlerFunc(s.handlePeerQR)))
 
 	// Network bridges.
-	s.mux.Handle("GET /api/bridges", guarded(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/bridges", guarded(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/bridges", guarded(http.HandlerFunc(s.handleListBridges)))
+	s.mux.Handle("POST /api/bridges", guarded(http.HandlerFunc(s.handleCreateBridge)))
+	s.mux.Handle("GET /api/bridges/{id}", guarded(http.HandlerFunc(s.handleGetBridge)))
 	s.mux.Handle("PUT /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("DELETE /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("DELETE /api/bridges/{id}", guarded(http.HandlerFunc(s.handleDeleteBridge)))
 
 	// Status & Monitoring.
 	s.mux.Handle("GET /api/status", guarded(http.HandlerFunc(s.handleStatus)))

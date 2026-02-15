@@ -51,6 +51,16 @@ type LinkManager interface {
 type NetworkStore interface {
 	ListNetworks(ctx context.Context) ([]NetworkConfig, error)
 	ListPeersByNetworkID(ctx context.Context, networkID int64) ([]PeerConfig, error)
+	ListBridges(ctx context.Context) ([]BridgeConfig, error)
+}
+
+// BridgeConfig contains the fields needed to reconcile bridge nftables rules.
+type BridgeConfig struct {
+	ID         int64
+	InterfaceA string
+	InterfaceB string
+	Direction  string
+	Enabled    bool
 }
 
 // DeviceConfig holds configuration to apply to a WireGuard device.
