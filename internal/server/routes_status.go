@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -174,6 +175,8 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNetworkStats returns aggregated peer snapshot data for a network.
+// Returns a flat array of {timestamp, transfer_rx, transfer_tx} entries
+// aggregated across all peers (or filtered by peer_id).
 // Query params: from (unix timestamp), to (unix timestamp), peer_id (optional).
 func (s *Server) handleNetworkStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -228,13 +231,11 @@ func (s *Server) handleNetworkStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	type peerStats struct {
-		PeerID    int64           `json:"peer_id"`
-		PeerName  string          `json:"peer_name"`
-		Snapshots []snapshotEntry `json:"snapshots"`
-	}
+	// Aggregate snapshots by timestamp across all peers into a flat array
+	// matching the frontend TransferStats[] type.
+	type tsKey = int64
+	aggregated := make(map[tsKey]*snapshotEntry)
 
-	var result []peerStats
 	for _, p := range peers {
 		if filterPeerID > 0 && p.ID != filterPeerID {
 			continue
@@ -246,40 +247,42 @@ func (s *Server) handleNetworkStats(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		entries := make([]snapshotEntry, 0, len(snapshots))
 		for _, snap := range snapshots {
-			entries = append(entries, snapshotEntry{
-				Timestamp: snap.Timestamp.Unix(),
-				RxBytes:   snap.RxBytes,
-				TxBytes:   snap.TxBytes,
-				Online:    snap.Online,
-			})
+			ts := snap.Timestamp.Unix()
+			if entry, ok := aggregated[ts]; ok {
+				entry.TransferRx += snap.RxBytes
+				entry.TransferTx += snap.TxBytes
+			} else {
+				aggregated[ts] = &snapshotEntry{
+					Timestamp:  ts,
+					TransferRx: snap.RxBytes,
+					TransferTx: snap.TxBytes,
+				}
+			}
 		}
-
-		result = append(result, peerStats{
-			PeerID:    p.ID,
-			PeerName:  p.Name,
-			Snapshots: entries,
-		})
 	}
 
-	if result == nil {
-		result = []peerStats{}
+	// Convert to sorted slice.
+	result := make([]snapshotEntry, 0, len(aggregated))
+	for _, entry := range aggregated {
+		result = append(result, *entry)
 	}
+	// Sort by timestamp.
+	sortSnapshotEntries(result)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"network_id": networkID,
-		"from":       from.Unix(),
-		"to":         to.Unix(),
-		"peers":      result,
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
 type snapshotEntry struct {
-	Timestamp int64 `json:"timestamp"`
-	RxBytes   int64 `json:"rx_bytes"`
-	TxBytes   int64 `json:"tx_bytes"`
-	Online    bool  `json:"online"`
+	Timestamp  int64 `json:"timestamp"`
+	TransferRx int64 `json:"transfer_rx"`
+	TransferTx int64 `json:"transfer_tx"`
+}
+
+func sortSnapshotEntries(entries []snapshotEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp < entries[j].Timestamp
+	})
 }
 
 func (s *Server) sendSSEStatus(w http.ResponseWriter, rc *http.ResponseController, iface string, networkID int64) {
