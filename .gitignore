@@ -1,0 +1,22 @@
+# Go
+wgpilot
+*.exe
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/node_modules/.tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
