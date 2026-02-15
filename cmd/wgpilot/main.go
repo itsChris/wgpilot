@@ -432,6 +432,11 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("store JWT secret: %w", err)
 			}
 
+			// Reset setup state so the wizard runs again.
+			if err := database.DeleteSetting(ctx, "setup_complete"); err != nil {
+				return fmt.Errorf("reset setup state: %w", err)
+			}
+
 			// Generate and store OTP.
 			otp, err := auth.GenerateOTP(16)
 			if err != nil {
