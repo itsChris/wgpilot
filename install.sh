@@ -2,7 +2,7 @@
 #
 # wgpilot install script
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/itsChris/wgpilot/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/itsChris/wgpilot/master/install.sh | sudo bash
 #   sudo bash install.sh --uninstall
 #
 set -euo pipefail
@@ -10,10 +10,10 @@ set -euo pipefail
 REPO="itsChris/wgpilot"
 BINARY_NAME="wgpilot"
 INSTALL_DIR="/usr/local/bin"
-SERVICE_USER="wg-webui"
-SERVICE_GROUP="wg-webui"
-DATA_DIR="/var/lib/wg-webui"
-CONFIG_DIR="/etc/wg-webui"
+SERVICE_USER="wgpilot"
+SERVICE_GROUP="wgpilot"
+DATA_DIR="/var/lib/wgpilot"
+CONFIG_DIR="/etc/wgpilot"
 SERVICE_NAME="wgpilot"
 SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
@@ -313,9 +313,11 @@ generate_config() {
 # wgpilot configuration
 # See documentation for all options.
 
-listen: 0.0.0.0:443
+server:
+  listen: 0.0.0.0:443
 
-data_dir: /var/lib/wg-webui
+database:
+  path: /var/lib/wgpilot/wgpilot.db
 
 tls:
   mode: self-signed              # self-signed | acme | manual
@@ -327,7 +329,7 @@ auth:
   session_ttl: 24h
   bcrypt_cost: 12
 
-log:
+logging:
   level: info                    # debug | info | warn | error
   format: json                   # json | text
 CONFIG
@@ -347,7 +349,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} serve
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} serve --config=${CONFIG_DIR}/config.yaml
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=5
@@ -375,9 +377,9 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 
-Environment=WG_WEBUI_DATA_DIR=${DATA_DIR}
-Environment=WG_WEBUI_CONFIG=${CONFIG_DIR}/config.yaml
-Environment=WG_WEBUI_LOG_LEVEL=info
+Environment=WGPILOT_DATA_DIR=${DATA_DIR}
+Environment=WGPILOT_CONFIG=${CONFIG_DIR}/config.yaml
+Environment=WGPILOT_LOG_LEVEL=info
 
 [Install]
 WantedBy=multi-user.target

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -11,6 +12,9 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/spf13/pflag"
 )
+
+// defaultConfigPath is checked when no --config flag is provided.
+const defaultConfigPath = "/etc/wgpilot/config.yaml"
 
 // Config holds all configuration for wgpilot.
 type Config struct {
@@ -72,6 +76,11 @@ func Load(configPath string, flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// 2. Load YAML config file (if exists).
+	if configPath == "" {
+		if _, err := os.Stat(defaultConfigPath); err == nil {
+			configPath = defaultConfigPath
+		}
+	}
 	if configPath != "" {
 		if err := k.Load(file.Provider(configPath), yaml.Parser()); err != nil {
 			return nil, fmt.Errorf("load config file %s: %w", configPath, err)
