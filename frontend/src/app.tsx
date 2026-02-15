@@ -4,6 +4,7 @@ import {
   createRootRoute,
   RouterProvider,
   redirect,
+  isRedirect,
   Outlet,
 } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -53,7 +54,7 @@ const loginRoute = createRoute({
         throw redirect({ to: '/setup' });
       }
     } catch (err) {
-      if (err && typeof err === 'object' && 'to' in err) throw err;
+      if (isRedirect(err)) throw err;
       // If the status check fails, proceed to login.
     }
   },
@@ -76,7 +77,7 @@ const authLayoutRoute = createRoute({
         throw redirect({ to: '/setup' });
       }
     } catch (err) {
-      if (err && typeof err === 'object' && 'to' in err) throw err;
+      if (isRedirect(err)) throw err;
       // If status check fails, proceed with auth check.
     }
     if (!getToken()) {
