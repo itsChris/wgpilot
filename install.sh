@@ -412,7 +412,7 @@ configure_firewall() {
     echo ""
     echo -e "${YELLOW}wgpilot listens on port 443 (HTTPS).${NC}"
     echo -n "Open port 443 in the firewall for public access? [y/N] "
-    read -r REPLY
+    read -r REPLY < /dev/tty
     echo ""
 
     if [[ ! "${REPLY}" =~ ^[Yy]$ ]]; then
