@@ -14,6 +14,12 @@ import (
 func (s *Server) registerRoutes() {
 	protected := servermw.RequireAuth(s.jwtService, s.sessions, s.logger)
 
+	// guarded wraps a handler with both auth and setup guard: the request
+	// must be authenticated AND setup must be complete.
+	guarded := func(h http.Handler) http.Handler {
+		return protected(s.setupGuard(h))
+	}
+
 	// ── Public routes (no auth) ───────────────────────────────────────
 
 	// Health check.
@@ -27,73 +33,74 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
 	s.mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 
-	// ── Protected routes ──────────────────────────────────────────────
+	// ── Setup routes (no auth — gated internally by OTP/step checks) ─
+	s.mux.HandleFunc("GET /api/setup/status", s.handleSetupStatus)
+	s.mux.HandleFunc("POST /api/setup/step/1", s.handleSetupStep1)
+	s.mux.Handle("POST /api/setup/step/2", protected(http.HandlerFunc(s.handleSetupStep2)))
+	s.mux.Handle("POST /api/setup/step/3", protected(http.HandlerFunc(s.handleSetupStep3)))
+	s.mux.Handle("POST /api/setup/step/4", protected(http.HandlerFunc(s.handleSetupStep4)))
+	s.mux.HandleFunc("GET /api/setup/detect-ip", s.handleDetectPublicIP)
+	s.mux.HandleFunc("POST /api/setup/import", s.notImplemented)
 
-	// Auth (protected).
+	// ── Protected + guarded routes (require auth + setup complete) ────
+
+	// Auth (protected only — no setup guard needed).
 	s.mux.Handle("GET /api/auth/me", protected(http.HandlerFunc(s.handleMe)))
 	s.mux.Handle("PUT /api/auth/password", protected(http.HandlerFunc(s.notImplemented)))
 
-	// Setup (first-run only, but still requires no auth per spec — gated internally).
-	s.mux.HandleFunc("GET /api/setup/status", s.notImplemented)
-	s.mux.HandleFunc("POST /api/setup/admin", s.notImplemented)
-	s.mux.HandleFunc("PUT /api/setup/server", s.notImplemented)
-	s.mux.HandleFunc("POST /api/setup/network", s.notImplemented)
-	s.mux.HandleFunc("POST /api/setup/peer", s.notImplemented)
-	s.mux.HandleFunc("POST /api/setup/import", s.notImplemented)
-
 	// Networks.
-	s.mux.Handle("GET /api/networks", protected(http.HandlerFunc(s.handleListNetworks)))
-	s.mux.Handle("POST /api/networks", protected(http.HandlerFunc(s.handleCreateNetwork)))
-	s.mux.Handle("GET /api/networks/{id}", protected(http.HandlerFunc(s.handleGetNetwork)))
-	s.mux.Handle("PUT /api/networks/{id}", protected(http.HandlerFunc(s.handleUpdateNetwork)))
-	s.mux.Handle("DELETE /api/networks/{id}", protected(http.HandlerFunc(s.handleDeleteNetwork)))
-	s.mux.Handle("POST /api/networks/{id}/enable", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/networks/{id}/disable", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/networks", guarded(http.HandlerFunc(s.handleListNetworks)))
+	s.mux.Handle("POST /api/networks", guarded(http.HandlerFunc(s.handleCreateNetwork)))
+	s.mux.Handle("GET /api/networks/{id}", guarded(http.HandlerFunc(s.handleGetNetwork)))
+	s.mux.Handle("PUT /api/networks/{id}", guarded(http.HandlerFunc(s.handleUpdateNetwork)))
+	s.mux.Handle("DELETE /api/networks/{id}", guarded(http.HandlerFunc(s.handleDeleteNetwork)))
+	s.mux.Handle("POST /api/networks/{id}/enable", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/networks/{id}/disable", guarded(http.HandlerFunc(s.notImplemented)))
 
 	// Peers.
-	s.mux.Handle("GET /api/networks/{id}/peers", protected(http.HandlerFunc(s.handleListPeers)))
-	s.mux.Handle("POST /api/networks/{id}/peers", protected(http.HandlerFunc(s.handleCreatePeer)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleGetPeer)))
-	s.mux.Handle("PUT /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleUpdatePeer)))
-	s.mux.Handle("DELETE /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleDeletePeer)))
-	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/enable", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/disable", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/config", protected(http.HandlerFunc(s.handlePeerConfig)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/qr", protected(http.HandlerFunc(s.handlePeerQR)))
+	s.mux.Handle("GET /api/networks/{id}/peers", guarded(http.HandlerFunc(s.handleListPeers)))
+	s.mux.Handle("POST /api/networks/{id}/peers", guarded(http.HandlerFunc(s.handleCreatePeer)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}", guarded(http.HandlerFunc(s.handleGetPeer)))
+	s.mux.Handle("PUT /api/networks/{id}/peers/{pid}", guarded(http.HandlerFunc(s.handleUpdatePeer)))
+	s.mux.Handle("DELETE /api/networks/{id}/peers/{pid}", guarded(http.HandlerFunc(s.handleDeletePeer)))
+	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/enable", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/disable", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/config", guarded(http.HandlerFunc(s.handlePeerConfig)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/qr", guarded(http.HandlerFunc(s.handlePeerQR)))
 
 	// Network bridges.
-	s.mux.Handle("GET /api/bridges", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/bridges", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/bridges/{id}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("PUT /api/bridges/{id}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("DELETE /api/bridges/{id}", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/bridges", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/bridges", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("PUT /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("DELETE /api/bridges/{id}", guarded(http.HandlerFunc(s.notImplemented)))
 
 	// Status & Monitoring.
-	s.mux.Handle("GET /api/status", protected(http.HandlerFunc(s.handleStatus)))
-	s.mux.Handle("GET /api/networks/{id}/events", protected(http.HandlerFunc(s.handleSSEEvents)))
-	s.mux.Handle("GET /api/networks/{id}/stats", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/status", guarded(http.HandlerFunc(s.handleStatus)))
+	s.mux.Handle("GET /api/networks/{id}/events", guarded(http.HandlerFunc(s.handleSSEEvents)))
+	s.mux.Handle("GET /api/networks/{id}/stats", guarded(http.HandlerFunc(s.notImplemented)))
 
 	// Debug (admin-only).
-	s.mux.Handle("GET /api/debug/info", protected(http.HandlerFunc(s.handleDebugInfo)))
-	s.mux.Handle("GET /api/debug/logs", protected(http.HandlerFunc(s.handleDebugLogs)))
+	s.mux.Handle("GET /api/debug/info", guarded(http.HandlerFunc(s.handleDebugInfo)))
+	s.mux.Handle("GET /api/debug/logs", guarded(http.HandlerFunc(s.handleDebugLogs)))
 
 	// Settings.
-	s.mux.Handle("GET /api/settings", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("PUT /api/settings", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/settings/tls", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/settings/tls/test", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/settings", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("PUT /api/settings", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/settings/tls", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/settings/tls/test", guarded(http.HandlerFunc(s.notImplemented)))
 
 	// Alerts.
-	s.mux.Handle("GET /api/alerts", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/alerts", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("PUT /api/alerts/{id}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("DELETE /api/alerts/{id}", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/alerts", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/alerts", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("PUT /api/alerts/{id}", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("DELETE /api/alerts/{id}", guarded(http.HandlerFunc(s.notImplemented)))
 
 	// System.
-	s.mux.Handle("GET /api/system/info", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/system/backup", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/system/restore", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/system/info", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/system/backup", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("POST /api/system/restore", guarded(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/audit-log", guarded(http.HandlerFunc(s.notImplemented)))
 }
 
 // handleHealth is the unauthenticated health check endpoint.

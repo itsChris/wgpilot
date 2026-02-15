@@ -104,3 +104,56 @@ export interface TransferStats {
   transfer_rx: number;
   transfer_tx: number;
 }
+
+// ── Setup wizard types ──────────────────────────────────────────────
+
+export interface SetupStatusResponse {
+  complete: boolean;
+  current_step: number;
+  wg_interfaces?: string[];
+}
+
+export interface SetupStep1Request {
+  otp: string;
+  username: string;
+  password: string;
+}
+
+export interface SetupStep1Response {
+  user: AuthUser;
+}
+
+export interface SetupStep2Request {
+  public_ip: string;
+  hostname: string;
+  dns_servers: string;
+}
+
+export interface SetupStep3Request {
+  name: string;
+  mode: 'gateway' | 'site-to-site' | 'hub-routed';
+  subnet: string;
+  listen_port: number;
+  nat_enabled: boolean;
+  inter_peer_routing: boolean;
+}
+
+export interface SetupStep3Response {
+  network: Network;
+}
+
+export interface SetupStep4Request {
+  name: string;
+  role: 'client' | 'site-gateway';
+  tunnel_type: 'full' | 'split';
+}
+
+export interface SetupStep4Response {
+  peer: Peer;
+  config: string;
+  qr_data: string;
+}
+
+export interface DetectIPResponse {
+  public_ip: string;
+}

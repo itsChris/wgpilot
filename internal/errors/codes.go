@@ -22,6 +22,8 @@ const (
 	ErrSessionExpired     = "SESSION_EXPIRED"
 	ErrInvalidCredentials = "INVALID_CREDENTIALS"
 	ErrSetupComplete      = "SETUP_ALREADY_COMPLETE"
+	ErrSetupRequired      = "SETUP_REQUIRED"
+	ErrStepOrderViolation = "STEP_ORDER_VIOLATION"
 	ErrInvalidOTP         = "INVALID_OTP"
 	ErrRateLimited        = "RATE_LIMITED"
 

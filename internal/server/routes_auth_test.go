@@ -189,6 +189,11 @@ func TestHandleSetup_Success(t *testing.T) {
 	srv := newTestServer(t)
 	ctx := context.Background()
 
+	// Clear setup_complete so the old setup endpoint works.
+	if err := srv.db.DeleteSetting(ctx, "setup_complete"); err != nil {
+		t.Fatalf("DeleteSetting: %v", err)
+	}
+
 	// Store OTP hash.
 	otp := "testsetuppassword"
 	otpHash, err := auth.HashPassword(otp)
@@ -273,6 +278,11 @@ func TestHandleSetup_InvalidOTP(t *testing.T) {
 	srv := newTestServer(t)
 	ctx := context.Background()
 
+	// Clear setup_complete so the old setup endpoint works.
+	if err := srv.db.DeleteSetting(ctx, "setup_complete"); err != nil {
+		t.Fatalf("DeleteSetting: %v", err)
+	}
+
 	otpHash, err := auth.HashPassword("correct-otp")
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
@@ -296,6 +306,11 @@ func TestHandleSetup_InvalidOTP(t *testing.T) {
 func TestHandleSetup_PasswordTooShort(t *testing.T) {
 	srv := newTestServer(t)
 	ctx := context.Background()
+
+	// Clear setup_complete so the old setup endpoint works.
+	if err := srv.db.DeleteSetting(ctx, "setup_complete"); err != nil {
+		t.Fatalf("DeleteSetting: %v", err)
+	}
 
 	otpHash, err := auth.HashPassword("correct-otp")
 	if err != nil {

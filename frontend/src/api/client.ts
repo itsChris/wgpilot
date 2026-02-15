@@ -27,9 +27,27 @@ export class ApiClientError extends Error {
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (response.status === 401) {
-    clearToken();
-    window.location.href = '/login';
+    // Don't redirect during setup wizard — let the component handle 401.
+    if (!window.location.pathname.startsWith('/setup')) {
+      clearToken();
+      window.location.href = '/login';
+    }
     throw new ApiClientError(401, 'UNAUTHORIZED', 'Session expired');
+  }
+
+  if (response.status === 403) {
+    // Redirect to setup if the server says setup is required.
+    const body = await response.json();
+    const apiError = body as ApiError;
+    if (apiError.error?.code === 'SETUP_REQUIRED') {
+      window.location.href = '/setup';
+      throw new ApiClientError(403, 'SETUP_REQUIRED', 'Setup not complete');
+    }
+    throw new ApiClientError(
+      response.status,
+      apiError.error?.code ?? 'FORBIDDEN',
+      apiError.error?.message ?? 'Forbidden',
+    );
   }
 
   if (response.status === 204) {

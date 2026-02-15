@@ -68,6 +68,13 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
+
+	// Mark setup as complete by default so guarded endpoints work.
+	// Tests that need setup-incomplete state should clear this.
+	if err := database.SetSetting(ctx, "setup_complete", "true"); err != nil {
+		t.Fatalf("SetSetting setup_complete: %v", err)
+	}
+
 	return srv
 }
 

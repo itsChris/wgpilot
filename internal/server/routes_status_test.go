@@ -85,6 +85,12 @@ func newTestServerForMonitoring(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
+
+	// Mark setup as complete so guarded endpoints work.
+	if err := database.SetSetting(ctx, "setup_complete", "true"); err != nil {
+		t.Fatalf("SetSetting setup_complete: %v", err)
+	}
+
 	return srv
 }
 
@@ -152,6 +158,12 @@ func newProdModeServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
+
+	// Mark setup as complete so guarded endpoints work.
+	if err := database.SetSetting(ctx, "setup_complete", "true"); err != nil {
+		t.Fatalf("SetSetting setup_complete: %v", err)
+	}
+
 	return srv
 }
 

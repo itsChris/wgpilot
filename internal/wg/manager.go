@@ -403,6 +403,23 @@ func (m *Manager) PeerStatus(iface string) ([]PeerStatus, error) {
 	return statuses, nil
 }
 
+// DetectInterfaces returns the names of all existing WireGuard interfaces.
+func (m *Manager) DetectInterfaces() ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	devs, err := m.wg.Devices()
+	if err != nil {
+		return nil, fmt.Errorf("detect interfaces: %w", err)
+	}
+
+	var names []string
+	for _, d := range devs {
+		names = append(names, d.Name)
+	}
+	return names, nil
+}
+
 // buildPeerConfig constructs a WGPeerConfig from a PeerConfig.
 func (m *Manager) buildPeerConfig(peer PeerConfig, updateOnly bool) (WGPeerConfig, error) {
 	allowedIPs, err := parseAllowedIPs(peer.AllowedIPs)
