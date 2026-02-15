@@ -38,24 +38,24 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/setup/import", s.notImplemented)
 
 	// Networks.
-	s.mux.Handle("GET /api/networks", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/networks", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("PUT /api/networks/{id}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("DELETE /api/networks/{id}", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/networks", protected(http.HandlerFunc(s.handleListNetworks)))
+	s.mux.Handle("POST /api/networks", protected(http.HandlerFunc(s.handleCreateNetwork)))
+	s.mux.Handle("GET /api/networks/{id}", protected(http.HandlerFunc(s.handleGetNetwork)))
+	s.mux.Handle("PUT /api/networks/{id}", protected(http.HandlerFunc(s.handleUpdateNetwork)))
+	s.mux.Handle("DELETE /api/networks/{id}", protected(http.HandlerFunc(s.handleDeleteNetwork)))
 	s.mux.Handle("POST /api/networks/{id}/enable", protected(http.HandlerFunc(s.notImplemented)))
 	s.mux.Handle("POST /api/networks/{id}/disable", protected(http.HandlerFunc(s.notImplemented)))
 
 	// Peers.
-	s.mux.Handle("GET /api/networks/{id}/peers", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("POST /api/networks/{id}/peers", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("PUT /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("DELETE /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/networks/{id}/peers", protected(http.HandlerFunc(s.handleListPeers)))
+	s.mux.Handle("POST /api/networks/{id}/peers", protected(http.HandlerFunc(s.handleCreatePeer)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleGetPeer)))
+	s.mux.Handle("PUT /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleUpdatePeer)))
+	s.mux.Handle("DELETE /api/networks/{id}/peers/{pid}", protected(http.HandlerFunc(s.handleDeletePeer)))
 	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/enable", protected(http.HandlerFunc(s.notImplemented)))
 	s.mux.Handle("POST /api/networks/{id}/peers/{pid}/disable", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/config", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/qr", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/config", protected(http.HandlerFunc(s.handlePeerConfig)))
+	s.mux.Handle("GET /api/networks/{id}/peers/{pid}/qr", protected(http.HandlerFunc(s.handlePeerQR)))
 
 	// Network bridges.
 	s.mux.Handle("GET /api/bridges", protected(http.HandlerFunc(s.notImplemented)))

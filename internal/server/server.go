@@ -7,7 +7,9 @@ import (
 	"github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/db"
 	"github.com/itsChris/wgpilot/internal/middleware"
+	"github.com/itsChris/wgpilot/internal/nft"
 	servermw "github.com/itsChris/wgpilot/internal/server/middleware"
+	"github.com/itsChris/wgpilot/internal/wg"
 )
 
 // Server is the HTTP server that wires together all subsystems.
@@ -17,6 +19,8 @@ type Server struct {
 	jwtService  *auth.JWTService
 	sessions    *auth.SessionManager
 	rateLimiter *auth.LoginRateLimiter
+	wgManager   *wg.Manager
+	nftManager  nft.NFTableManager
 	devMode     bool
 	handler     http.Handler
 	mux         *http.ServeMux
@@ -29,6 +33,8 @@ type Config struct {
 	JWTService  *auth.JWTService
 	Sessions    *auth.SessionManager
 	RateLimiter *auth.LoginRateLimiter
+	WGManager   *wg.Manager
+	NFTManager  nft.NFTableManager
 	DevMode     bool
 }
 
@@ -47,6 +53,8 @@ func New(cfg Config) (*Server, error) {
 		jwtService:  cfg.JWTService,
 		sessions:    cfg.Sessions,
 		rateLimiter: cfg.RateLimiter,
+		wgManager:   cfg.WGManager,
+		nftManager:  cfg.NFTManager,
 		devMode:     cfg.DevMode,
 		mux:         http.NewServeMux(),
 	}

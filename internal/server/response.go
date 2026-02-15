@@ -79,6 +79,33 @@ func decodeJSON(r *http.Request, v any) (code string, status int, err error) {
 	return "", 0, nil
 }
 
+// fieldError describes a single field-level validation error.
+type fieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// validationErrorResponse is the JSON shape for 400 validation errors.
+type validationErrorResponse struct {
+	Error     string       `json:"error"`
+	Code      string       `json:"code"`
+	RequestID string       `json:"request_id,omitempty"`
+	Fields    []fieldError `json:"fields"`
+}
+
+// writeValidationError writes a structured validation error with field-level details.
+func writeValidationError(w http.ResponseWriter, r *http.Request, fields []fieldError) {
+	requestID := logging.RequestID(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(validationErrorResponse{
+		Error:     "validation failed",
+		Code:      apperr.ErrValidation,
+		RequestID: requestID,
+		Fields:    fields,
+	})
+}
+
 // captureStack returns an abbreviated stack trace starting skip frames up.
 func captureStack(skip int) string {
 	pcs := make([]uintptr, 5)
