@@ -171,3 +171,15 @@ Simple alert rules stored in SQLite (see [../architecture/data-model.md](../arch
 | `transfer_spike` | Rate (e.g., 1GB/hour) | Email |
 
 Email via SMTP configured in settings. No webhook/Slack/PagerDuty — users can point those tools at `/metrics` or parse JSON logs.
+
+---
+
+## v0.3.0 Enhancements (Proposed)
+
+The following proposed features extend the monitoring system:
+
+- [feat-003: Interface-Level Statistics](feat-003-interface-level-statistics.md) — Add RX/TX/errors/drops counters at the interface level (via `netlink.Link.Statistics`), plus new Prometheus metrics
+- [feat-004: Event-Driven Monitoring](feat-004-event-driven-monitoring.md) — Replace/augment 30s polling with instant netlink subscriptions for link/route/address changes
+- [feat-006: Active Connection Viewer](feat-006-active-connection-viewer.md) — View active TCP/UDP connections through WireGuard tunnels via conntrack
+- [feat-008: PersistentKeepalive Display](feat-008-persistent-keepalive-display.md) — Expose the currently-discarded keepalive interval in peer status
+- [feat-010: Device Type Diagnostics](feat-010-device-type-diagnostics.md) — Show kernel vs userspace WireGuard backend in status API

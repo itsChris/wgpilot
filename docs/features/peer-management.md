@@ -102,4 +102,14 @@ interface Peer {
     created_at: number;
     updated_at: number;
 }
+
+---
+
+## v0.3.0 Enhancements (Proposed)
+
+The following proposed features extend peer management:
+
+- [feat-001: Per-Peer Bandwidth Limits](feat-001-per-peer-bandwidth-limits.md) — Add `bandwidth_up_kbps` and `bandwidth_down_kbps` fields to peers
+- [feat-006: Active Connection Viewer](feat-006-active-connection-viewer.md) — View active connections per peer, auto-flush conntrack on peer disable/remove
+- [feat-008: PersistentKeepalive Display](feat-008-persistent-keepalive-display.md) — Display the kernel's actual keepalive interval in peer status and UI
 ```

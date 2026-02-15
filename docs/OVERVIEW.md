@@ -28,6 +28,21 @@ The binary embeds all frontend assets via `go:embed`, manages WireGuard interfac
 | [operations/updates.md](operations/updates.md) | Self-update mechanism, GoReleaser, versioning, roadmap | install-script.md, project-structure.md |
 | [decisions/adr-001-no-mesh.md](decisions/adr-001-no-mesh.md) | Why mesh topology was excluded, full decisions log | network-management.md |
 
+### v0.3.0 Proposed Features (Kernel API Enhancements)
+
+| File | Purpose | Related Docs |
+|---|---|---|
+| [features/feat-001-per-peer-bandwidth-limits.md](features/feat-001-per-peer-bandwidth-limits.md) | QoS: per-peer upload/download limits via HTB qdiscs | peer-management.md, monitoring.md |
+| [features/feat-002-split-tunnel-policy-routing.md](features/feat-002-split-tunnel-policy-routing.md) | Policy routing: ip rules, routing tables, FirewallMark | network-management.md, feat-009 |
+| [features/feat-003-interface-level-statistics.md](features/feat-003-interface-level-statistics.md) | Interface RX/TX/errors/drops via netlink link stats | monitoring.md, feat-005 |
+| [features/feat-004-event-driven-monitoring.md](features/feat-004-event-driven-monitoring.md) | Netlink subscriptions for instant link/route/addr events | monitoring.md, feat-002 |
+| [features/feat-005-mtu-management.md](features/feat-005-mtu-management.md) | Per-network MTU configuration via netlink | network-management.md, peer-management.md |
+| [features/feat-006-active-connection-viewer.md](features/feat-006-active-connection-viewer.md) | Conntrack: view/flush active VPN connections | monitoring.md, peer-management.md |
+| [features/feat-007-port-conflict-detection.md](features/feat-007-port-conflict-detection.md) | UDP socket diagnostics for clear port-in-use errors | network-management.md, service.md |
+| [features/feat-008-persistent-keepalive-display.md](features/feat-008-persistent-keepalive-display.md) | Stop discarding PersistentKeepaliveInterval, expose in UI | peer-management.md, monitoring.md |
+| [features/feat-009-route-table-viewer.md](features/feat-009-route-table-viewer.md) | View kernel routing tables and ip rules in the web UI | feat-002, network-management.md |
+| [features/feat-010-device-type-diagnostics.md](features/feat-010-device-type-diagnostics.md) | Show kernel vs userspace WireGuard backend in diagnostics | monitoring.md, service.md |
+
 ---
 
 ## Build Phases

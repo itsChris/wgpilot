@@ -194,3 +194,14 @@ func (n *NFTManager) AddSubnetForward(iface string, localSubnet, remoteSubnet st
 ```
 
 All rules are managed in a dedicated `wgpilot` nftables table to avoid conflicts with existing firewall rules.
+
+---
+
+## v0.3.0 Enhancements (Proposed)
+
+The following proposed features extend network management:
+
+- [feat-001: Per-Peer Bandwidth Limits](feat-001-per-peer-bandwidth-limits.md) — QoS via HTB qdiscs on WireGuard interfaces (per-peer upload/download limits)
+- [feat-002: Split-Tunnel / Policy Routing](feat-002-split-tunnel-policy-routing.md) — Managed ip rules, routing tables, and FirewallMark for advanced routing
+- [feat-005: MTU Management](feat-005-mtu-management.md) — Per-network MTU configuration via `netlink.LinkSetMTU`
+- [feat-007: Port Conflict Detection](feat-007-port-conflict-detection.md) — Pre-validate UDP port availability via socket diagnostics before interface creation
