@@ -27,6 +27,7 @@ import (
 	"github.com/itsChris/wgpilot/internal/server"
 	wgtls "github.com/itsChris/wgpilot/internal/tls"
 	"github.com/itsChris/wgpilot/internal/updater"
+	"github.com/itsChris/wgpilot/internal/wg"
 	"github.com/spf13/cobra"
 )
 
@@ -178,6 +179,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer rateLimiter.Stop()
 
+	// ── Create WireGuard manager ─────────────────────────────────────
+	wgCtrl, err := wg.NewWireGuardController()
+	if err != nil {
+		logger.Warn("wireguard_controller_init_failed",
+			"error", err,
+			"component", "main",
+		)
+	}
+
+	var wgMgr *wg.Manager
+	if wgCtrl != nil {
+		linkMgr := wg.NewLinkManager()
+		wgMgr, err = wg.NewManager(wgCtrl, linkMgr, logger)
+		if err != nil {
+			logger.Warn("wireguard_manager_init_failed",
+				"error", err,
+				"component", "main",
+			)
+		}
+	}
+
 	// ── Create HTTP server ───────────────────────────────────────────
 	srv, err := server.New(server.Config{
 		DB:          database,
@@ -185,6 +207,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		JWTService:  jwtSvc,
 		Sessions:    sessions,
 		RateLimiter: rateLimiter,
+		WGManager:   wgMgr,
 		DevMode:     cfg.Server.DevMode,
 		Ring:        ring,
 		Version:     version,
