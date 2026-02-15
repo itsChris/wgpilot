@@ -18,7 +18,9 @@ import (
 	"github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/config"
 	"github.com/itsChris/wgpilot/internal/db"
+	"github.com/itsChris/wgpilot/internal/debug"
 	"github.com/itsChris/wgpilot/internal/logging"
+	"github.com/itsChris/wgpilot/internal/monitor"
 	"github.com/itsChris/wgpilot/internal/sdnotify"
 	"github.com/itsChris/wgpilot/internal/server"
 	"github.com/spf13/cobra"
@@ -179,6 +181,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Sessions:    sessions,
 		RateLimiter: rateLimiter,
 		DevMode:     cfg.Server.DevMode,
+		Ring:        ring,
+		Version:     version,
 	})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
@@ -190,6 +194,45 @@ func runServe(cmd *cobra.Command, args []string) error {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// ── Start background monitor ────────────────────────────────────
+	monitorCtx, monitorCancel := context.WithCancel(context.Background())
+	defer monitorCancel()
+
+	pollInterval := 30 * time.Second
+	if pi, err := time.ParseDuration(cfg.Monitor.PollInterval); err == nil {
+		pollInterval = pi
+	}
+
+	compactInterval := 1 * time.Hour
+	if ci, err := time.ParseDuration(cfg.Monitor.CompactionInterval); err == nil {
+		compactInterval = ci
+	}
+
+	retention := 24 * time.Hour
+	if ret, err := time.ParseDuration(cfg.Monitor.SnapshotRetention); err == nil {
+		retention = ret
+	}
+
+	poller, err := monitor.NewPoller(database, nil, logger, pollInterval)
+	if err != nil {
+		logger.Warn("monitor_poller_init_failed",
+			"error", err,
+			"component", "main",
+		)
+	} else {
+		go poller.Run(monitorCtx)
+	}
+
+	compactor, err := monitor.NewCompactor(database, logger, compactInterval, retention)
+	if err != nil {
+		logger.Warn("monitor_compactor_init_failed",
+			"error", err,
+			"component", "main",
+		)
+	} else {
+		go compactor.Run(monitorCtx)
 	}
 
 	// ── Signal handling ──────────────────────────────────────────────
@@ -278,6 +321,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 						"component", "main",
 					)
 				}
+
+				monitorCancel()
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -380,14 +425,27 @@ func newInitCmd() *cobra.Command {
 }
 
 func newDiagnoseCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "diagnose",
 		Short: "Run system diagnostics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
-			return nil
+			jsonOutput, _ := cmd.Flags().GetBool("json")
+			dataDir, _ := cmd.Flags().GetString("data-dir")
+			if dataDir == "" {
+				dataDir = "/var/lib/wgpilot"
+			}
+
+			return debug.Run(debug.Config{
+				Version:    version,
+				DataDir:    dataDir,
+				DBPath:     filepath.Join(dataDir, "wgpilot.db"),
+				JSONOutput: jsonOutput,
+				Writer:     os.Stdout,
+			})
 		},
 	}
+	cmd.Flags().Bool("json", false, "output in JSON format")
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {

@@ -28,6 +28,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	ctx := context.Background()
 	logger := newDiscardLogger()
+	ring := logging.NewRingBuffer(100)
 
 	database, err := db.New(ctx, ":memory:", logger, true)
 	if err != nil {
@@ -61,6 +62,8 @@ func newTestServer(t *testing.T) *Server {
 		Sessions:    sessions,
 		RateLimiter: limiter,
 		DevMode:     true,
+		Ring:        ring,
+		Version:     "test",
 	})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
@@ -220,12 +223,12 @@ func TestHealthEndpoint_NoAuth(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["status"] != "ok" {
-		t.Errorf("expected status=ok, got %q", resp["status"])
+	if resp["status"] != "healthy" {
+		t.Errorf("expected status=healthy, got %q", resp["status"])
 	}
 }
 
@@ -258,7 +261,7 @@ func TestNotImplementedEndpoint_Returns501(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "/api/status", nil)
+	req := httptest.NewRequest("GET", "/api/settings", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)

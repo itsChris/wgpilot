@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	apperr "github.com/itsChris/wgpilot/internal/errors"
 	servermw "github.com/itsChris/wgpilot/internal/server/middleware"
@@ -17,6 +18,9 @@ func (s *Server) registerRoutes() {
 
 	// Health check.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+
+	// Prometheus metrics (unauthenticated).
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	// Auth.
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -65,9 +69,13 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("DELETE /api/bridges/{id}", protected(http.HandlerFunc(s.notImplemented)))
 
 	// Status & Monitoring.
-	s.mux.Handle("GET /api/status", protected(http.HandlerFunc(s.notImplemented)))
-	s.mux.Handle("GET /api/networks/{id}/events", protected(http.HandlerFunc(s.notImplemented)))
+	s.mux.Handle("GET /api/status", protected(http.HandlerFunc(s.handleStatus)))
+	s.mux.Handle("GET /api/networks/{id}/events", protected(http.HandlerFunc(s.handleSSEEvents)))
 	s.mux.Handle("GET /api/networks/{id}/stats", protected(http.HandlerFunc(s.notImplemented)))
+
+	// Debug (admin-only).
+	s.mux.Handle("GET /api/debug/info", protected(http.HandlerFunc(s.handleDebugInfo)))
+	s.mux.Handle("GET /api/debug/logs", protected(http.HandlerFunc(s.handleDebugLogs)))
 
 	// Settings.
 	s.mux.Handle("GET /api/settings", protected(http.HandlerFunc(s.notImplemented)))
@@ -90,7 +98,32 @@ func (s *Server) registerRoutes() {
 
 // handleHealth is the unauthenticated health check endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	uptime := time.Since(s.startTime)
+
+	networks, err := s.db.ListNetworks(r.Context())
+	networkInfo := map[string]int{"total": 0, "healthy": 0, "degraded": 0}
+	dbStatus := "ok"
+	if err != nil {
+		dbStatus = "error"
+	} else {
+		networkInfo["total"] = len(networks)
+		healthy := 0
+		for _, n := range networks {
+			if n.Enabled {
+				healthy++
+			}
+		}
+		networkInfo["healthy"] = healthy
+		networkInfo["degraded"] = networkInfo["total"] - healthy
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "healthy",
+		"version":  s.version,
+		"uptime":   formatDuration(uptime),
+		"networks": networkInfo,
+		"database": dbStatus,
+	})
 }
 
 // notImplemented returns 501 for endpoints that are registered but not
@@ -102,4 +135,19 @@ func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {
 		http.StatusNotImplemented,
 		s.devMode,
 	)
+}
+
+// formatDuration formats a duration as a human-readable string like "14d 3h 22m".
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
 }

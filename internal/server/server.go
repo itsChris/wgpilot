@@ -3,9 +3,11 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/db"
+	"github.com/itsChris/wgpilot/internal/logging"
 	"github.com/itsChris/wgpilot/internal/middleware"
 	"github.com/itsChris/wgpilot/internal/nft"
 	servermw "github.com/itsChris/wgpilot/internal/server/middleware"
@@ -24,6 +26,10 @@ type Server struct {
 	devMode     bool
 	handler     http.Handler
 	mux         *http.ServeMux
+
+	ring      *logging.RingBuffer
+	startTime time.Time
+	version   string
 }
 
 // Config holds the dependencies for creating a new Server.
@@ -36,6 +42,8 @@ type Config struct {
 	WGManager   *wg.Manager
 	NFTManager  nft.NFTableManager
 	DevMode     bool
+	Ring        *logging.RingBuffer
+	Version     string
 }
 
 // New creates a Server, registers all routes, and builds the middleware chain.
@@ -57,6 +65,9 @@ func New(cfg Config) (*Server, error) {
 		nftManager:  cfg.NFTManager,
 		devMode:     cfg.DevMode,
 		mux:         http.NewServeMux(),
+		ring:        cfg.Ring,
+		startTime:   time.Now(),
+		version:     cfg.Version,
 	}
 	s.registerRoutes()
 
