@@ -407,14 +407,48 @@ initialize_wgpilot() {
     ok "wgpilot initialized"
 }
 
-# ── 12. Enable and start service ─────────────────────────────────────
+# ── 12. Configure firewall ────────────────────────────────────────────
+configure_firewall() {
+    echo ""
+    echo -e "${YELLOW}wgpilot listens on port 443 (HTTPS).${NC}"
+    echo -n "Open port 443 in the firewall for public access? [y/N] "
+    read -r REPLY
+    echo ""
+
+    if [[ ! "${REPLY}" =~ ^[Yy]$ ]]; then
+        info "Skipping firewall configuration. You may need to open port 443 manually."
+        return
+    fi
+
+    # Detect firewall and open port 443/tcp
+    if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
+        ufw allow 443/tcp >/dev/null
+        ok "Firewall: opened port 443/tcp (ufw)"
+    elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null
+        firewall-cmd --reload >/dev/null
+        ok "Firewall: opened port 443/tcp (firewalld)"
+    elif command -v iptables &>/dev/null; then
+        iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
+            iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+        # Persist if iptables-save is available
+        if command -v iptables-save &>/dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        fi
+        ok "Firewall: opened port 443/tcp (iptables)"
+    else
+        warn "No supported firewall detected (ufw, firewalld, iptables). Open port 443 manually if needed."
+    fi
+}
+
+# ── 13. Enable and start service ─────────────────────────────────────
 start_service() {
     systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1
     systemctl start "${SERVICE_NAME}"
     ok "Service ${SERVICE_NAME} enabled and started"
 }
 
-# ── 13. Detect public IP and print info ──────────────────────────────
+# ── 14. Detect public IP and print info ──────────────────────────────
 print_info() {
     local public_ip
     public_ip=$(curl -fsSL -4 https://ifconfig.me 2>/dev/null || \
@@ -451,5 +485,6 @@ create_directories
 generate_config
 install_systemd_unit
 initialize_wgpilot
+configure_firewall
 start_service
 print_info
