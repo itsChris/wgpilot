@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	wgpilot "github.com/itsChris/wgpilot"
 	"github.com/itsChris/wgpilot/internal/auth"
 	"github.com/itsChris/wgpilot/internal/config"
 	"github.com/itsChris/wgpilot/internal/db"
@@ -189,6 +191,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
+
+	// ── Embed frontend SPA ─────────────────────────────────────────
+	frontendFS, err := fs.Sub(wgpilot.FrontendDist, "frontend/dist")
+	if err != nil {
+		return fmt.Errorf("embed frontend: %w", err)
+	}
+	srv.RegisterFrontend(frontendFS)
 
 	// ── Configure TLS ───────────────────────────────────────────────
 	dataDir := filepath.Dir(cfg.Database.Path)

@@ -72,6 +72,35 @@ func TestGenerateOTP_Unique(t *testing.T) {
 	}
 }
 
+func TestMinPasswordLength_Is10(t *testing.T) {
+	if MinPasswordLength != 10 {
+		t.Errorf("expected MinPasswordLength=10, got %d", MinPasswordLength)
+	}
+}
+
+func TestMinPasswordLength_Enforcement(t *testing.T) {
+	tests := []struct {
+		name     string
+		password string
+		tooShort bool
+	}{
+		{"empty", "", true},
+		{"1 char", "a", true},
+		{"9 chars", "123456789", true},
+		{"10 chars", "1234567890", false},
+		{"11 chars", "12345678901", false},
+		{"72 chars", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isShort := len(tt.password) < MinPasswordLength
+			if isShort != tt.tooShort {
+				t.Errorf("password %q: expected tooShort=%v, got %v", tt.password, tt.tooShort, isShort)
+			}
+		})
+	}
+}
+
 func TestGenerateOTP_Charset(t *testing.T) {
 	otp, err := GenerateOTP(100)
 	if err != nil {

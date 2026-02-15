@@ -506,6 +506,12 @@ func (s *Server) handleUpdatePeer(w http.ResponseWriter, r *http.Request) {
 	// Re-fetch for updated timestamps.
 	updated, err := s.db.GetPeerByID(ctx, peerID)
 	if err != nil || updated == nil {
+		s.logger.Error("get_updated_peer_failed",
+			"error", err,
+			"operation", "update_peer",
+			"component", "handler",
+			"peer_id", peerID,
+		)
 		writeError(w, r, fmt.Errorf("failed to retrieve updated peer"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}

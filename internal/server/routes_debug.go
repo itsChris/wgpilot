@@ -78,17 +78,9 @@ func (s *Server) handleDebugInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Database stats.
-	dbInfo := map[string]any{}
-	ctx := r.Context()
-	for _, table := range []string{"networks", "peers", "peer_snapshots", "settings"} {
-		var count int64
-		row := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table)
-		if err := row.Scan(&count); err == nil {
-			dbInfo[table] = count
-		}
-	}
+	tableCounts := s.db.TableCounts(r.Context(), []string{"networks", "peers", "peer_snapshots", "settings"})
 	info["database"] = map[string]any{
-		"tables": dbInfo,
+		"tables": tableCounts,
 	}
 
 	writeJSON(w, http.StatusOK, info)

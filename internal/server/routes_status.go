@@ -46,7 +46,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"operation", "status",
 			"component", "http",
 		)
-		writeError(w, r, fmt.Errorf("list networks: %w", err), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		writeError(w, r, fmt.Errorf("failed to list networks"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 
@@ -130,13 +130,19 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	networkID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, fmt.Errorf("invalid network ID: %w", err), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
+		writeError(w, r, fmt.Errorf("invalid network ID"), apperr.ErrValidation, http.StatusBadRequest, s.devMode)
 		return
 	}
 
 	network, err := s.db.GetNetworkByID(r.Context(), networkID)
 	if err != nil {
-		writeError(w, r, fmt.Errorf("get network: %w", err), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
+		s.logger.Error("sse_get_network_failed",
+			"error", err,
+			"operation", "sse_events",
+			"component", "handler",
+			"network_id", networkID,
+		)
+		writeError(w, r, fmt.Errorf("failed to get network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}
 	if network == nil {

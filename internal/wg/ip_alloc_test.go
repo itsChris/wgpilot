@@ -242,6 +242,46 @@ func TestFirstUsableIP(t *testing.T) {
 	}
 }
 
+func TestIPAllocator_ConcurrentAllocation_NoDuplicates(t *testing.T) {
+	subnet := mustParseCIDR("10.0.0.0/24")
+	alloc, err := NewIPAllocator(subnet, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 50
+	results := make(chan string, goroutines)
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			ip, err := alloc.Allocate()
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- ip.String()
+		}()
+	}
+
+	seen := make(map[string]bool)
+	for i := 0; i < goroutines; i++ {
+		select {
+		case ip := <-results:
+			if seen[ip] {
+				t.Errorf("duplicate IP allocated: %s", ip)
+			}
+			seen[ip] = true
+		case err := <-errs:
+			t.Fatalf("unexpected allocation error: %v", err)
+		}
+	}
+
+	if len(seen) != goroutines {
+		t.Errorf("expected %d unique IPs, got %d", goroutines, len(seen))
+	}
+}
+
 func TestIsBroadcast(t *testing.T) {
 	subnet := mustParseCIDR("10.0.0.0/24")
 

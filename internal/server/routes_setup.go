@@ -312,6 +312,9 @@ func (s *Server) handleSetupStep2(w http.ResponseWriter, r *http.Request) {
 	if req.PublicIP != "" && net.ParseIP(req.PublicIP) == nil {
 		errs = append(errs, fieldError{"public_ip", "must be a valid IP address"})
 	}
+	if req.Hostname != "" && !isValidHostname(req.Hostname) {
+		errs = append(errs, fieldError{"hostname", "must be a valid FQDN"})
+	}
 	if !isValidDNSServers(req.DNSServers) {
 		errs = append(errs, fieldError{"dns_servers", "must be up to 3 valid IP addresses, comma-separated"})
 	}

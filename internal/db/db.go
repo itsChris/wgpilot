@@ -153,6 +153,31 @@ func (d *DB) logQuery(ctx context.Context, op, query string, args []any, duratio
 	}
 }
 
+// TableCounts returns row counts for the given tables. Tables that don't
+// exist or can't be queried are silently omitted from the result.
+func (d *DB) TableCounts(ctx context.Context, tables []string) map[string]int64 {
+	counts := make(map[string]int64, len(tables))
+	for _, table := range tables {
+		var count int64
+		row := d.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table)
+		if err := row.Scan(&count); err == nil {
+			counts[table] = count
+		}
+	}
+	return counts
+}
+
+// IntegrityCheck runs PRAGMA integrity_check and returns the result.
+// A healthy database returns "ok".
+func (d *DB) IntegrityCheck(ctx context.Context) (string, error) {
+	var result string
+	row := d.QueryRowContext(ctx, "PRAGMA integrity_check")
+	if err := row.Scan(&result); err != nil {
+		return "", fmt.Errorf("db: integrity check: %w", err)
+	}
+	return result, nil
+}
+
 // timedRow wraps sql.Row to log after Scan completes.
 type timedRow struct {
 	row   *sql.Row

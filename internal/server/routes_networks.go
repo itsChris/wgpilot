@@ -103,6 +103,15 @@ func isValidPrivateCIDR(cidr string) bool {
 	return false
 }
 
+var validHostnameRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+func isValidHostname(h string) bool {
+	if len(h) > 253 {
+		return false
+	}
+	return validHostnameRe.MatchString(h)
+}
+
 func isValidDNSServers(s string) bool {
 	if s == "" {
 		return true
@@ -548,6 +557,12 @@ func (s *Server) handleUpdateNetwork(w http.ResponseWriter, r *http.Request) {
 	// Re-fetch for updated timestamps.
 	updated, err := s.db.GetNetworkByID(ctx, id)
 	if err != nil || updated == nil {
+		s.logger.Error("get_updated_network_failed",
+			"error", err,
+			"operation", "update_network",
+			"component", "handler",
+			"network_id", id,
+		)
 		writeError(w, r, fmt.Errorf("failed to retrieve updated network"), apperr.ErrInternal, http.StatusInternalServerError, s.devMode)
 		return
 	}

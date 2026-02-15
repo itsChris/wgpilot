@@ -5,7 +5,6 @@ package wg
 import (
 	"fmt"
 	"net"
-	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -166,7 +165,3 @@ func fromWGPeer(p wgtypes.Peer) WGPeerInfo {
 	return info
 }
 
-// wgConfigureTimeout returns the default timeout for WireGuard configuration operations.
-func wgConfigureTimeout() time.Duration {
-	return 10 * time.Second
-}

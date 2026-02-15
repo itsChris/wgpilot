@@ -159,6 +159,42 @@ func TestDB_TransactionRollback(t *testing.T) {
 	}
 }
 
+func TestDB_IntegrityCheck(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	result, err := d.IntegrityCheck(ctx)
+	if err != nil {
+		t.Fatalf("IntegrityCheck: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("expected integrity check result 'ok', got %q", result)
+	}
+}
+
+func TestDB_TableCounts(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	// Insert a network to have data.
+	_, err := d.CreateNetwork(ctx, &Network{
+		Name: "Test", Interface: "wg0", Mode: "gateway",
+		Subnet: "10.0.0.0/24", ListenPort: 51820,
+		PrivateKey: "pk", PublicKey: "pub", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork: %v", err)
+	}
+
+	counts := d.TableCounts(ctx, []string{"networks", "peers", "settings"})
+	if counts["networks"] != 1 {
+		t.Errorf("expected 1 network, got %d", counts["networks"])
+	}
+	if counts["peers"] != 0 {
+		t.Errorf("expected 0 peers, got %d", counts["peers"])
+	}
+}
+
 // testNetwork creates a sample network for testing.
 func testNetwork() *Network {
 	return &Network{

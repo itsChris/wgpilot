@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestNew_DevMode(t *testing.T) {
 	if logger == nil {
 		t.Fatal("expected non-nil logger")
 	}
-	if !logger.Enabled(nil, slog.LevelDebug) {
+	if !logger.Enabled(context.Background(), slog.LevelDebug) {
 		t.Error("expected debug level to be enabled in dev mode")
 	}
 }
@@ -26,10 +27,10 @@ func TestNew_ProductionMode(t *testing.T) {
 	if logger == nil {
 		t.Fatal("expected non-nil logger")
 	}
-	if logger.Enabled(nil, slog.LevelDebug) {
+	if logger.Enabled(context.Background(), slog.LevelDebug) {
 		t.Error("expected debug level to be disabled in production mode")
 	}
-	if !logger.Enabled(nil, slog.LevelInfo) {
+	if !logger.Enabled(context.Background(), slog.LevelInfo) {
 		t.Error("expected info level to be enabled in production mode")
 	}
 }
