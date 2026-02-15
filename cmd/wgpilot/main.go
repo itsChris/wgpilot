@@ -1,9 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 
+	"github.com/itsChris/wgpilot/internal/auth"
+	"github.com/itsChris/wgpilot/internal/db"
+	"github.com/itsChris/wgpilot/internal/logging"
 	"github.com/spf13/cobra"
 )
 
@@ -64,7 +71,62 @@ func newInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Initialize wgpilot configuration and database",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(os.Stderr, "not implemented")
+			ctx := context.Background()
+			devMode, _ := cmd.Flags().GetBool("dev-mode")
+			logLevel, _ := cmd.Flags().GetString("log-level")
+
+			level := slog.LevelInfo
+			if logLevel == "debug" {
+				level = slog.LevelDebug
+			}
+			logger := logging.New(logging.Config{Level: level, DevMode: devMode})
+
+			dataDir, _ := cmd.Flags().GetString("data-dir")
+			if dataDir == "" {
+				dataDir = "/var/lib/wgpilot"
+			}
+
+			if err := os.MkdirAll(dataDir, 0750); err != nil {
+				return fmt.Errorf("create data directory: %w", err)
+			}
+
+			dsn := filepath.Join(dataDir, "wgpilot.db")
+			database, err := db.New(ctx, dsn, logger, devMode)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer database.Close()
+
+			if err := db.Migrate(ctx, database, logger); err != nil {
+				return fmt.Errorf("run migrations: %w", err)
+			}
+
+			// Generate and store JWT secret.
+			jwtSecret, err := auth.GenerateSecret(32)
+			if err != nil {
+				return fmt.Errorf("generate JWT secret: %w", err)
+			}
+			if err := database.SetSetting(ctx, "jwt_secret", base64.StdEncoding.EncodeToString(jwtSecret)); err != nil {
+				return fmt.Errorf("store JWT secret: %w", err)
+			}
+
+			// Generate and store OTP.
+			otp, err := auth.GenerateOTP(16)
+			if err != nil {
+				return fmt.Errorf("generate OTP: %w", err)
+			}
+			otpHash, err := auth.HashPassword(otp)
+			if err != nil {
+				return fmt.Errorf("hash OTP: %w", err)
+			}
+			if err := database.SetSetting(ctx, "setup_otp", otpHash); err != nil {
+				return fmt.Errorf("store OTP: %w", err)
+			}
+
+			fmt.Printf("Database initialized at %s\n", dsn)
+			fmt.Printf("One-time setup password: %s\n", otp)
+			fmt.Println("Use this password to complete setup via the web UI.")
+
 			return nil
 		},
 	}
