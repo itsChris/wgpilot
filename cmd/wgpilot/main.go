@@ -404,15 +404,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 				monitorCancel()
 
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
 				if err := httpServer.Shutdown(shutdownCtx); err != nil {
-					logger.Error("shutdown_error",
+					// Deadline exceeded is expected when SSE connections are open.
+					logger.Warn("shutdown_forced",
 						"error", err,
 						"component", "main",
 					)
-					return fmt.Errorf("shutdown: %w", err)
+					httpServer.Close()
 				}
 
 				logger.Info("shutdown_complete", "component", "main")
