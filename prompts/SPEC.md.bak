@@ -1,0 +1,1846 @@
+# wgman — Technical Specification
+
+**Version:** 0.1.0-draft
+**Date:** 2026-02-15
+**Status:** Pre-implementation
+
+---
+
+## Table of Contents
+
+1. [Overview](#1-overview)
+2. [Architecture](#2-architecture)
+3. [Technology Stack](#3-technology-stack)
+4. [Data Model](#4-data-model)
+5. [API Surface](#5-api-surface)
+6. [Backend Design](#6-backend-design)
+7. [Frontend Design](#7-frontend-design)
+8. [Authentication & Authorization](#8-authentication--authorization)
+9. [WireGuard Management Layer](#9-wireguard-management-layer)
+10. [Network Topology Modes](#10-network-topology-modes)
+11. [Multi-Network Support](#11-multi-network-support)
+12. [Client Provisioning](#12-client-provisioning)
+13. [First-Run Experience](#13-first-run-experience)
+14. [Observability](#14-observability)
+15. [Install Script](#15-install-script)
+16. [Service Management](#16-service-management)
+17. [CLI Interface](#17-cli-interface)
+18. [Configuration](#18-configuration)
+19. [Security Hardening](#19-security-hardening)
+20. [Build & Release Pipeline](#20-build--release-pipeline)
+21. [Project Structure](#21-project-structure)
+22. [Development Workflow](#22-development-workflow)
+23. [Versioning & Roadmap](#23-versioning--roadmap)
+
+---
+
+## 1. Overview
+
+**wgman** is a self-hosted WireGuard management appliance. It ships as a single Go binary that embeds a React web UI, manages WireGuard interfaces programmatically (no shell-outs), and stores all state in SQLite. Users install it with a one-liner, walk through a setup wizard, and manage their VPN networks entirely through the browser.
+
+### Design Principles
+
+- **Single binary.** No runtime dependencies. No Node, Python, nginx, or database server.
+- **No shell-outs.** All WireGuard, networking, and firewall operations use native Go libraries.
+- **SQLite is the source of truth.** Kernel state is reconciled from the database on startup.
+- **Appliance model.** Install, configure, forget. Minimal operational burden.
+- **Secure by default.** Runs as unprivileged user with minimal Linux capabilities.
+
+---
+
+## 2. Architecture
+
+```
+┌───────────────────────────────────────────────┐
+│                  wgman binary                  │
+│                                               │
+│  ┌─────────────┐  ┌────────────────────────┐  │
+│  │  React SPA  │  │     Go HTTP Server     │  │
+│  │  (embed.FS) │  │                        │  │
+│  │             │  │  ┌──────┐ ┌──────────┐ │  │
+│  │  shadcn/ui  │◄─┤  │ REST │ │   SSE    │ │  │
+│  │  Tailwind   │  │  │ API  │ │ (live)   │ │  │
+│  │  TanStack   │  │  └──┬───┘ └────┬─────┘ │  │
+│  └─────────────┘  │     │          │        │  │
+│                   │  ┌──▼──────────▼─────┐  │  │
+│                   │  │   Service Layer    │  │  │
+│                   │  │                    │  │  │
+│                   │  │ ┌────┐ ┌────────┐  │  │  │
+│                   │  │ │Auth│ │Config  │  │  │  │
+│                   │  │ └────┘ └────────┘  │  │  │
+│                   │  └──┬────────────┬───┘  │  │
+│                   │     │            │       │  │
+│                   │  ┌──▼───┐  ┌────▼────┐  │  │
+│                   │  │SQLite│  │ WG Mgr  │  │  │
+│                   │  │ (DB) │  │         │  │  │
+│                   │  └──────┘  │wgctrl   │  │  │
+│                   │            │netlink  │  │  │
+│                   │            │nftables │  │  │
+│                   │            └────┬────┘  │  │
+│                   └─────────────────┼──────┘  │
+└─────────────────────────────────────┼─────────┘
+                                      │
+                              ┌───────▼───────┐
+                              │ Linux Kernel  │
+                              │  WireGuard    │
+                              │  Netfilter    │
+                              │  Routing      │
+                              └───────────────┘
+```
+
+### Data Flow
+
+1. User interacts with React SPA in the browser.
+2. SPA calls REST API (`/api/*`) on the same origin.
+3. API handler validates request, authenticates via JWT.
+4. Service layer performs business logic.
+5. Database operations go through the SQLite repository layer.
+6. WireGuard/network operations go through the WG Manager (wgctrl + netlink + nftables).
+7. Live status updates flow from kernel → WG Manager → SSE → SPA.
+
+---
+
+## 3. Technology Stack
+
+### Backend (Go)
+
+| Component | Library | Purpose |
+|---|---|---|
+| HTTP server | `net/http` (stdlib) | Routing, middleware, TLS |
+| CLI framework | `github.com/spf13/cobra` | Subcommands (serve, init, update, etc.) |
+| WireGuard control | `golang.zx2c4.com/wireguard/wgctrl` | Peer/device management via netlink |
+| Network interfaces | `github.com/vishvananda/netlink` | Create/delete interfaces, IPs, routes |
+| Firewall | `github.com/google/nftables` | NAT, forwarding rules |
+| Database | `modernc.org/sqlite` | Pure Go SQLite (no CGO) |
+| Migrations | `github.com/pressly/goose/v3` | Schema migrations |
+| Auth | `golang.org/x/crypto/bcrypt` | Password hashing |
+| JWT | `github.com/golang-jwt/jwt/v5` | Session tokens |
+| TLS | `golang.org/x/crypto/acme/autocert` | Auto Let's Encrypt |
+| Logging | `log/slog` (stdlib) | Structured JSON logging |
+| Systemd notify | `github.com/coreos/go-systemd/v22` | sd_notify integration |
+| Config | `github.com/knadh/koanf/v2` | Config file + env + flags |
+| QR codes | `github.com/skip2/go-qrcode` | QR code generation for peer configs |
+| Embed | `embed` (stdlib) | Embed frontend assets in binary |
+
+### Frontend (React)
+
+| Component | Library | Purpose |
+|---|---|---|
+| Framework | React 18 | UI framework |
+| Components | shadcn/ui (Radix primitives) | Accessible, styled components |
+| Styling | Tailwind CSS | Utility-first CSS |
+| Data fetching | TanStack Query | API cache, polling, mutations |
+| Routing | TanStack Router | Type-safe client-side routing |
+| Forms | react-hook-form + zod | Form handling + schema validation |
+| Charts | Recharts | Transfer history graphs |
+| QR display | qrcode.react | QR code rendering in browser |
+| Build | Vite | Fast builds, HMR in dev |
+| Language | TypeScript | Type safety |
+
+### Infrastructure
+
+| Component | Tool | Purpose |
+|---|---|---|
+| Build | GoReleaser | Cross-compile + GitHub Releases |
+| CI | GitHub Actions | Test, lint, release |
+| Service | systemd | Process management |
+| TLS (optional) | Caddy | Reverse proxy if user prefers external TLS |
+
+---
+
+## 4. Data Model
+
+### Entity Relationship
+
+```
+Settings (key-value)
+    │
+    │
+Network ──────< Peer
+    │              │
+    │              └── PeerSnapshot (time series)
+    │
+    └──< NetworkBridge >── Network
+```
+
+### Tables
+
+#### `settings`
+
+Global configuration stored as key-value pairs.
+
+```sql
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Known keys:
+-- setup_complete       (bool)    "true" / "false"
+-- public_ip            (string)  auto-detected external IP
+-- hostname             (string)  optional, enables ACME TLS
+-- default_dns          (string)  comma-separated DNS servers
+-- admin_password_hash  (string)  bcrypt hash (set during setup)
+-- install_token_hash   (string)  bcrypt hash of one-time install password
+-- tls_mode             (string)  "self-signed" | "acme" | "manual"
+-- smtp_host            (string)  for alert emails
+-- smtp_port            (string)
+-- smtp_user            (string)
+-- smtp_pass            (string)  encrypted at rest
+-- smtp_from            (string)
+-- alert_email          (string)  recipient for alerts
+```
+
+#### `users`
+
+```sql
+CREATE TABLE users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'admin',  -- 'admin' only for now
+    created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+);
+```
+
+#### `networks`
+
+```sql
+CREATE TABLE networks (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT    NOT NULL,
+    interface           TEXT    NOT NULL UNIQUE,       -- wg0, wg1, ...
+    mode                TEXT    NOT NULL,              -- 'gateway' | 'site-to-site' | 'hub-routed'
+    subnet              TEXT    NOT NULL,              -- CIDR: 10.0.0.0/24
+    listen_port         INTEGER NOT NULL,
+    private_key         TEXT    NOT NULL,              -- encrypted at rest
+    public_key          TEXT    NOT NULL,
+    dns_servers         TEXT    NOT NULL DEFAULT '',   -- comma-separated
+    nat_enabled         BOOLEAN NOT NULL DEFAULT 0,
+    inter_peer_routing  BOOLEAN NOT NULL DEFAULT 0,
+    enabled             BOOLEAN NOT NULL DEFAULT 1,
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+
+    UNIQUE(listen_port)
+);
+```
+
+#### `peers`
+
+```sql
+CREATE TABLE peers (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    network_id            INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    name                  TEXT    NOT NULL,
+    email                 TEXT    NOT NULL DEFAULT '',  -- optional, for identification
+    private_key           TEXT    NOT NULL,             -- encrypted at rest, needed for config generation
+    public_key            TEXT    NOT NULL,
+    preshared_key         TEXT    NOT NULL DEFAULT '',  -- encrypted at rest, optional
+    allowed_ips           TEXT    NOT NULL,             -- single IP/32 for clients, subnet for site gateways
+    endpoint              TEXT    NOT NULL DEFAULT '',  -- null/empty for clients behind NAT
+    persistent_keepalive  INTEGER NOT NULL DEFAULT 0,   -- seconds, 0 = disabled
+    role                  TEXT    NOT NULL DEFAULT 'client',  -- 'client' | 'site-gateway'
+    site_networks         TEXT    NOT NULL DEFAULT '',  -- additional CIDRs (site-to-site)
+    enabled               BOOLEAN NOT NULL DEFAULT 1,
+    created_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at            INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX idx_peers_network ON peers(network_id);
+```
+
+#### `network_bridges`
+
+```sql
+CREATE TABLE network_bridges (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    network_a_id    INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    network_b_id    INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    direction       TEXT    NOT NULL DEFAULT 'bidirectional',  -- 'a_to_b' | 'b_to_a' | 'bidirectional'
+    allowed_cidrs   TEXT    NOT NULL DEFAULT '',  -- optional fine-grained filter
+    enabled         BOOLEAN NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+
+    UNIQUE(network_a_id, network_b_id)
+);
+```
+
+#### `peer_snapshots`
+
+```sql
+CREATE TABLE peer_snapshots (
+    peer_id    INTEGER NOT NULL REFERENCES peers(id) ON DELETE CASCADE,
+    timestamp  INTEGER NOT NULL,  -- unix epoch
+    rx_bytes   INTEGER NOT NULL,
+    tx_bytes   INTEGER NOT NULL,
+    online     BOOLEAN NOT NULL,
+
+    PRIMARY KEY (peer_id, timestamp)
+);
+
+CREATE INDEX idx_snapshots_time ON peer_snapshots(peer_id, timestamp);
+```
+
+#### `audit_log`
+
+```sql
+CREATE TABLE audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp  INTEGER NOT NULL DEFAULT (unixepoch()),
+    user_id    INTEGER,           -- NULL for system events
+    action     TEXT    NOT NULL,  -- 'peer.created', 'network.updated', etc.
+    resource   TEXT    NOT NULL,  -- 'network:1', 'peer:5', etc.
+    detail     TEXT    NOT NULL DEFAULT '',  -- JSON payload of changes
+    ip_address TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
+CREATE INDEX idx_audit_action ON audit_log(action);
+```
+
+#### `alerts`
+
+```sql
+CREATE TABLE alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT    NOT NULL,  -- 'peer_offline' | 'interface_down' | 'transfer_spike'
+    threshold  TEXT    NOT NULL,  -- '10m', '1GB/hour', etc.
+    notify     TEXT    NOT NULL DEFAULT 'email',
+    enabled    BOOLEAN NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+```
+
+---
+
+## 5. API Surface
+
+All endpoints are prefixed with `/api`. Authentication is required for all endpoints except `/api/auth/login` and `/api/setup/*` (during first-run only).
+
+### Authentication
+
+```
+POST   /api/auth/login              # username/password → JWT
+POST   /api/auth/logout             # invalidate session
+GET    /api/auth/me                 # current user info
+PUT    /api/auth/password           # change password
+```
+
+### Setup (first-run only, disabled after setup_complete=true)
+
+```
+POST   /api/setup/admin             # Step 1: create admin account
+PUT    /api/setup/server            # Step 2: confirm server identity
+POST   /api/setup/network           # Step 3: create first network
+POST   /api/setup/peer              # Step 4: create first peer
+GET    /api/setup/status            # which steps are complete
+POST   /api/setup/import            # import existing WG interfaces
+```
+
+### Networks
+
+```
+GET    /api/networks                # list all networks
+POST   /api/networks                # create network
+GET    /api/networks/:id            # get network details
+PUT    /api/networks/:id            # update network
+DELETE /api/networks/:id            # delete network (tears down interface)
+POST   /api/networks/:id/enable     # enable network (bring up interface)
+POST   /api/networks/:id/disable    # disable network (bring down interface)
+```
+
+### Peers
+
+```
+GET    /api/networks/:id/peers              # list peers in network
+POST   /api/networks/:id/peers              # create peer
+GET    /api/networks/:id/peers/:pid         # get peer details
+PUT    /api/networks/:id/peers/:pid         # update peer
+DELETE /api/networks/:id/peers/:pid         # delete peer
+POST   /api/networks/:id/peers/:pid/enable  # enable peer
+POST   /api/networks/:id/peers/:pid/disable # disable peer
+GET    /api/networks/:id/peers/:pid/config  # download .conf file
+GET    /api/networks/:id/peers/:pid/qr      # get QR code (PNG)
+```
+
+### Network Bridges
+
+```
+GET    /api/bridges                 # list all bridges
+POST   /api/bridges                 # create bridge between networks
+GET    /api/bridges/:id             # get bridge details
+PUT    /api/bridges/:id             # update bridge
+DELETE /api/bridges/:id             # delete bridge
+```
+
+### Status & Monitoring
+
+```
+GET    /api/status                  # live interface stats from kernel
+GET    /api/networks/:id/events     # SSE stream for real-time peer status
+GET    /api/networks/:id/stats      # historical transfer data (query params: from, to, granularity)
+```
+
+### Settings
+
+```
+GET    /api/settings                # get all settings (sensitive values redacted)
+PUT    /api/settings                # update settings
+GET    /api/settings/tls            # TLS status (cert expiry, mode)
+POST   /api/settings/tls/test       # test ACME provisioning
+```
+
+### Alerts
+
+```
+GET    /api/alerts                  # list alert rules
+POST   /api/alerts                  # create alert rule
+PUT    /api/alerts/:id              # update alert rule
+DELETE /api/alerts/:id              # delete alert rule
+```
+
+### System
+
+```
+GET    /health                      # health check (no auth required)
+GET    /metrics                     # Prometheus metrics (no auth required, optionally gated)
+GET    /api/system/info             # version, uptime, OS info
+POST   /api/system/backup           # trigger database backup (returns file)
+POST   /api/system/restore          # restore from backup upload
+GET    /api/audit-log               # query audit log (query params: from, to, action, limit, offset)
+```
+
+### Request/Response Conventions
+
+- All request/response bodies are JSON (`Content-Type: application/json`).
+- Timestamps are unix epoch integers.
+- List endpoints support `?limit=N&offset=M` for pagination.
+- Error responses follow a consistent format:
+
+```json
+{
+    "error": {
+        "code": "PEER_NOT_FOUND",
+        "message": "peer 42 does not exist in network 1"
+    }
+}
+```
+
+- HTTP status codes: 200 (OK), 201 (Created), 204 (No Content for deletes), 400 (Bad Request), 401 (Unauthorized), 404 (Not Found), 409 (Conflict), 500 (Internal Server Error).
+
+---
+
+## 6. Backend Design
+
+### Package Structure
+
+```
+internal/
+├── server/          # HTTP server, router, middleware
+│   ├── server.go    # server setup, TLS, graceful shutdown
+│   ├── router.go    # route registration
+│   ├── middleware.go # auth, logging, recovery, CORS
+│   └── handlers/    # one file per resource
+│       ├── auth.go
+│       ├── setup.go
+│       ├── networks.go
+│       ├── peers.go
+│       ├── bridges.go
+│       ├── status.go
+│       ├── settings.go
+│       ├── alerts.go
+│       └── system.go
+├── wg/              # WireGuard management layer
+│   ├── manager.go   # high-level operations (create network, add peer)
+│   ├── device.go    # wgctrl device operations
+│   ├── iface.go     # netlink interface operations
+│   ├── route.go     # route management
+│   ├── keys.go      # key generation helpers
+│   └── reconcile.go # startup reconciliation (DB → kernel)
+├── nft/             # nftables rule management
+│   ├── manager.go   # high-level: apply NAT, forwarding rules
+│   └── rules.go     # rule builders
+├── db/              # SQLite repository layer
+│   ├── db.go        # connection, migrations, WAL mode
+│   ├── networks.go  # network CRUD
+│   ├── peers.go     # peer CRUD
+│   ├── bridges.go   # bridge CRUD
+│   ├── settings.go  # settings get/set
+│   ├── users.go     # user CRUD
+│   ├── snapshots.go # peer snapshot writes/reads/compaction
+│   ├── audit.go     # audit log writes/queries
+│   ├── alerts.go    # alert rule CRUD
+│   └── migrations/  # goose migration SQL files
+│       ├── 001_initial.sql
+│       └── ...
+├── auth/            # authentication
+│   ├── jwt.go       # JWT creation, validation
+│   ├── password.go  # bcrypt hash/verify
+│   └── session.go   # session management
+├── config/          # configuration
+│   ├── config.go    # config struct + loading
+│   └── defaults.go  # default values
+├── monitor/         # monitoring & alerting
+│   ├── poller.go    # periodic peer status polling
+│   ├── snapshots.go # snapshot writer + compaction
+│   ├── alerts.go    # alert evaluation + notification
+│   └── metrics.go   # Prometheus metrics collector
+├── tls/             # TLS certificate management
+│   ├── acme.go      # Let's Encrypt auto-provisioning
+│   ├── selfsigned.go# self-signed cert generation
+│   └── manager.go   # TLS config builder
+└── updater/         # self-update mechanism
+    └── updater.go   # GitHub releases check + binary replace
+```
+
+### Startup Sequence
+
+```
+main()
+  ├── Parse CLI flags (cobra)
+  ├── Load config.yaml
+  ├── Open SQLite database
+  │   ├── Enable WAL mode
+  │   └── Run migrations (goose)
+  ├── Initialize WG Manager
+  │   └── Reconcile kernel state from DB
+  │       ├── For each enabled network in DB:
+  │       │   ├── Create interface if missing
+  │       │   ├── Configure device (key, port)
+  │       │   ├── Set IP address
+  │       │   ├── Add all enabled peers
+  │       │   ├── Apply nftables rules
+  │       │   └── Bring interface up
+  │       └── Remove orphaned interfaces not in DB
+  ├── Initialize TLS (acme/self-signed/manual)
+  ├── Start monitoring poller (30s interval)
+  ├── Start snapshot compaction job (daily)
+  ├── Start HTTP server
+  ├── sd_notify(READY)
+  ├── Start watchdog heartbeat (15s)
+  └── Await shutdown signal
+       ├── SIGTERM/SIGINT → graceful shutdown
+       │   ├── Stop accepting connections
+       │   ├── Finish in-flight requests (10s timeout)
+       │   ├── Stop poller
+       │   ├── Close database
+       │   └── Exit 0
+       └── SIGHUP → reload config
+           ├── Re-read config.yaml
+           ├── Update log level
+           └── Refresh TLS certificates
+```
+
+### Reconciliation Logic
+
+On startup, the app reconciles kernel state against the database. The database is always the source of truth.
+
+```go
+func (m *Manager) Reconcile(ctx context.Context) error {
+    // 1. Get all networks from DB
+    networks, _ := m.db.ListNetworks()
+
+    // 2. Get all existing WG interfaces from kernel
+    devices, _ := m.wgClient.Devices()
+    existingIfaces := map[string]bool{}
+    for _, d := range devices {
+        existingIfaces[d.Name] = true
+    }
+
+    // 3. For each DB network, ensure kernel matches
+    for _, net := range networks {
+        if !net.Enabled {
+            // If interface exists but shouldn't, tear it down
+            if existingIfaces[net.Interface] {
+                m.teardownInterface(net.Interface)
+            }
+            continue
+        }
+
+        // Create or reconfigure interface
+        m.ensureInterface(net)
+
+        // Sync peers
+        dbPeers, _ := m.db.ListPeers(net.ID)
+        m.syncPeers(net.Interface, dbPeers)
+
+        // Apply firewall rules
+        m.nft.ApplyRules(net)
+    }
+
+    // 4. Remove orphaned interfaces (in kernel but not in DB)
+    for _, d := range devices {
+        if !m.db.InterfaceExists(d.Name) {
+            m.teardownInterface(d.Name)
+        }
+    }
+
+    return nil
+}
+```
+
+---
+
+## 7. Frontend Design
+
+### React SPA Architecture
+
+The frontend is a single-page application built with Vite, embedded into the Go binary at compile time via `go:embed`.
+
+### Page Structure
+
+```
+/login                          # login form
+/setup                          # first-run wizard (4 steps)
+/setup/admin                    # step 1: create admin
+/setup/server                   # step 2: server identity
+/setup/network                  # step 3: first network
+/setup/peer                     # step 4: first peer
+
+/                               # dashboard (redirects to /dashboard)
+/dashboard                      # overview: stats, peer status, quick actions
+/networks                       # network list
+/networks/:id                   # network detail + peer table
+/networks/:id/peers/:pid        # peer detail + config download
+/networks/new                   # create network form
+/bridges                        # network bridge management
+/settings                       # global settings
+/settings/tls                   # TLS configuration
+/settings/alerts                # alert rules
+/audit-log                      # audit log viewer
+```
+
+### Component Hierarchy
+
+```
+<App>
+├── <AuthProvider>              # JWT context, auto-refresh
+├── <QueryClientProvider>       # TanStack Query
+└── <RouterProvider>            # TanStack Router
+    ├── <SetupWizard>           # shown when setup_complete=false
+    │   ├── <StepAdmin>
+    │   ├── <StepServer>
+    │   ├── <StepNetwork>
+    │   └── <StepPeer>
+    └── <AppShell>              # sidebar + header + content
+        ├── <Sidebar>
+        │   ├── Dashboard
+        │   ├── Networks
+        │   ├── Bridges
+        │   ├── Settings
+        │   └── Audit Log
+        ├── <Header>
+        │   ├── Breadcrumbs
+        │   └── User menu (logout, change password)
+        └── <Outlet>            # page content
+            ├── <DashboardPage>
+            │   ├── <StatsCards>        # networks, peers, transfer
+            │   ├── <NetworkOverview>   # per-network peer status
+            │   └── <TransferChart>     # 24h transfer graph
+            ├── <NetworkListPage>
+            │   └── <NetworkCard>[]     # card per network with stats
+            ├── <NetworkDetailPage>
+            │   ├── <NetworkInfo>       # network config summary
+            │   ├── <PeerTable>         # sortable, filterable
+            │   │   └── <PeerRow>       # status dot, name, transfer, actions
+            │   └── <AddPeerDialog>     # modal form
+            ├── <PeerDetailPage>
+            │   ├── <PeerInfo>          # config details
+            │   ├── <PeerConfigModal>   # QR code + download + copy
+            │   └── <PeerTransferChart> # per-peer transfer history
+            ├── <BridgesPage>
+            │   └── <BridgeTable>
+            ├── <SettingsPage>
+            │   ├── <GeneralSettings>   # public IP, DNS, hostname
+            │   ├── <TLSSettings>       # cert status, mode switch
+            │   ├── <SMTPSettings>      # email config for alerts
+            │   └── <AlertSettings>     # alert rules CRUD
+            └── <AuditLogPage>
+                └── <AuditTable>        # filterable, paginated
+```
+
+### API Layer
+
+All API calls go through a typed client using TanStack Query:
+
+```typescript
+// Types mirror Go structs
+interface Network {
+    id: number;
+    name: string;
+    interface: string;
+    mode: 'gateway' | 'site-to-site' | 'hub-routed';
+    subnet: string;
+    listen_port: number;
+    public_key: string;
+    dns_servers: string;
+    nat_enabled: boolean;
+    inter_peer_routing: boolean;
+    enabled: boolean;
+    created_at: number;
+    updated_at: number;
+}
+
+interface Peer {
+    id: number;
+    network_id: number;
+    name: string;
+    email: string;
+    public_key: string;
+    allowed_ips: string;
+    endpoint: string;
+    persistent_keepalive: number;
+    role: 'client' | 'site-gateway';
+    site_networks: string;
+    enabled: boolean;
+    online: boolean;
+    last_handshake: number;
+    transfer_rx: number;
+    transfer_tx: number;
+    created_at: number;
+    updated_at: number;
+}
+
+interface PeerStatus {
+    peer_id: number;
+    online: boolean;
+    last_handshake: number;
+    transfer_rx: number;
+    transfer_tx: number;
+}
+```
+
+### Live Updates via SSE
+
+The dashboard subscribes to server-sent events for real-time peer status:
+
+```
+GET /api/networks/:id/events
+Content-Type: text/event-stream
+
+event: status
+data: [{"peer_id":1,"online":true,"last_handshake":1739...,"transfer_rx":...}]
+
+event: status
+data: [...]
+```
+
+The SSE hook updates TanStack Query cache directly, avoiding refetches:
+
+```typescript
+useSSE(`/networks/${networkId}/events`, (peers: PeerStatus[]) => {
+    queryClient.setQueryData(['networks', networkId, 'peers'], (old) =>
+        old?.map(p => {
+            const update = peers.find(s => s.peer_id === p.id);
+            return update ? { ...p, ...update } : p;
+        })
+    );
+});
+```
+
+### UI Design Language
+
+- **Color scheme:** Neutral/slate base with accent color for actions. Dark mode supported via Tailwind `dark:` classes.
+- **Status indicators:** Green dot = online (handshake < 3min), gray dot = offline.
+- **Layout:** Fixed sidebar (collapsible on mobile), scrollable content area.
+- **Responsive:** Mobile-friendly — sidebar collapses to hamburger menu, tables switch to card layout on small screens.
+
+---
+
+## 8. Authentication & Authorization
+
+### Login Flow
+
+1. User submits username + password to `POST /api/auth/login`.
+2. Server verifies bcrypt hash.
+3. Server issues JWT (HS256, signed with a random secret generated on first run and stored in settings).
+4. JWT stored in `httpOnly`, `secure`, `sameSite=strict` cookie.
+5. JWT expiry: 24 hours (configurable via `auth.session_ttl`).
+6. On each API request, middleware validates JWT from cookie.
+7. If JWT is expired, return 401. Frontend redirects to login.
+
+### JWT Payload
+
+```json
+{
+    "sub": 1,
+    "username": "admin",
+    "role": "admin",
+    "iat": 1739000000,
+    "exp": 1739086400
+}
+```
+
+### First-Run Authentication
+
+During setup (before `setup_complete=true`), the install script generates a one-time password. This authenticates the first session via `POST /api/setup/admin` which accepts:
+
+```json
+{
+    "install_token": "Kx9mP2vQ7nB4wR1j",
+    "username": "admin",
+    "password": "user-chosen-password"
+}
+```
+
+The install token is invalidated after the admin account is created.
+
+### Password Storage
+
+- bcrypt with cost factor 12.
+- Minimum password length: 8 characters (enforced in UI and API).
+
+---
+
+## 9. WireGuard Management Layer
+
+### Library Stack
+
+```
+┌─────────────────────────────────────┐
+│          wg/manager.go              │  High-level operations
+│  CreateNetwork, AddPeer, Remove...  │
+├─────────────────────────────────────┤
+│          wg/device.go               │  wgctrl-go
+│  ConfigureDevice, GetDevice         │  (WireGuard kernel API)
+├─────────────────────────────────────┤
+│          wg/iface.go                │  vishvananda/netlink
+│  LinkAdd, AddrAdd, LinkSetUp        │  (Network interface mgmt)
+├─────────────────────────────────────┤
+│          wg/route.go                │  vishvananda/netlink
+│  RouteAdd, RouteReplace             │  (Routing table mgmt)
+├─────────────────────────────────────┤
+│          nft/manager.go             │  google/nftables
+│  AddMasquerade, AddForward          │  (Firewall rules)
+└─────────────────────────────────────┘
+```
+
+### Key Operations
+
+**Create Network:**
+1. Generate server keypair (`wgtypes.GeneratePrivateKey()`).
+2. Create WireGuard interface via netlink (`&netlink.Wireguard{}`).
+3. Assign IP address from subnet (first usable IP, e.g., 10.0.0.1/24).
+4. Configure WireGuard device (private key, listen port).
+5. Bring interface up.
+6. If NAT enabled: add nftables masquerade rule on POSTROUTING.
+7. If inter-peer routing: add nftables forward rule for the subnet.
+8. Persist to database.
+
+**Add Peer:**
+1. Generate client keypair.
+2. Optionally generate preshared key.
+3. Allocate next available IP from network subnet.
+4. Add peer to WireGuard device via wgctrl.
+5. Persist to database.
+6. Return generated config for client.
+
+**Delete Network:**
+1. Remove all nftables rules for this interface.
+2. Bring interface down.
+3. Delete interface via netlink.
+4. Delete from database (cascade deletes peers).
+
+### IP Allocation
+
+Automatic IP allocation from network subnet:
+
+```go
+func (m *Manager) AllocateIP(networkID int64) (net.IP, error) {
+    network, _ := m.db.GetNetwork(networkID)
+    _, subnet, _ := net.ParseCIDR(network.Subnet)
+
+    // Get all allocated IPs in this network
+    peers, _ := m.db.ListPeers(networkID)
+    used := map[string]bool{}
+    for _, p := range peers {
+        ip, _, _ := net.ParseCIDR(p.AllowedIPs)
+        used[ip.String()] = true
+    }
+
+    // Skip network address, server address (first usable), and broadcast
+    serverIP := firstUsableIP(subnet)  // e.g., 10.0.0.1
+    used[serverIP.String()] = true
+
+    // Find next available
+    for ip := nextIP(serverIP); subnet.Contains(ip); ip = nextIP(ip) {
+        if !isBroadcast(ip, subnet) && !used[ip.String()] {
+            return ip, nil
+        }
+    }
+
+    return nil, fmt.Errorf("no available IPs in subnet %s", network.Subnet)
+}
+```
+
+---
+
+## 10. Network Topology Modes
+
+### Mode 1: VPN Gateway (default)
+
+The server acts as a NAT gateway. Clients route all (or some) traffic through the server.
+
+| Setting | Server-side | Client config |
+|---|---|---|
+| AllowedIPs (on server) | `peer_ip/32` | — |
+| AllowedIPs (in .conf) | — | `0.0.0.0/0, ::/0` (full tunnel) or specific CIDRs (split tunnel) |
+| NAT | masquerade wg→eth | — |
+| IP forwarding | wg→eth only | — |
+| nftables | `MASQUERADE` on `POSTROUTING` for wg interface | — |
+
+### Mode 2: Site-to-Site
+
+Two or more gateways, each representing a local LAN. Traffic routes between sites.
+
+| Setting | Server-side | Client config |
+|---|---|---|
+| AllowedIPs (on server) | `peer_ip/32` + `site_networks` CIDRs | — |
+| AllowedIPs (in .conf) | — | Remote site subnets |
+| NAT | No (unless explicitly toggled) | — |
+| IP forwarding | wg↔wg + wg↔eth | — |
+| nftables | `FORWARD` between subnets | — |
+
+### Mode 3: Hub with Peer Routing
+
+Same as gateway but clients can reach each other through the hub.
+
+| Setting | Server-side | Client config |
+|---|---|---|
+| AllowedIPs (on server) | `peer_ip/32` | — |
+| AllowedIPs (in .conf) | — | WG subnet (`10.0.0.0/24`) |
+| NAT | No | — |
+| IP forwarding | wg↔wg only | — |
+| nftables | `FORWARD` within wg subnet | — |
+
+### nftables Rule Templates
+
+```go
+// Gateway mode: NAT
+func (n *NFTManager) AddMasquerade(iface string, subnet string) {
+    // table ip wgman
+    //   chain postrouting { type nat hook postrouting priority 100 }
+    //     iifname "wg0" oifname != "wg0" masquerade
+}
+
+// Hub-routed mode: inter-peer forwarding
+func (n *NFTManager) AddInterPeerForward(iface string) {
+    // table ip wgman
+    //   chain forward { type filter hook forward priority 0 }
+    //     iifname "wg0" oifname "wg0" accept
+}
+
+// Site-to-site: forward between subnets
+func (n *NFTManager) AddSubnetForward(iface string, localSubnet, remoteSubnet string) {
+    // table ip wgman
+    //   chain forward { type filter hook forward priority 0 }
+    //     ip saddr <localSubnet> ip daddr <remoteSubnet> accept
+    //     ip saddr <remoteSubnet> ip daddr <localSubnet> accept
+}
+```
+
+All rules are managed in a dedicated `wgman` nftables table to avoid conflicts with existing firewall rules.
+
+---
+
+## 11. Multi-Network Support
+
+Multiple independent WireGuard interfaces on the same server. Each network gets:
+
+- Its own interface (`wg0`, `wg1`, `wg2`, ...)
+- Its own subnet (must not overlap)
+- Its own listen port (must be unique)
+- Its own server keypair
+- Its own nftables rules
+
+Networks are isolated by default. Optional bridging via `network_bridges` table allows controlled routing between networks.
+
+### Interface Naming
+
+Auto-assigned: `wg0`, `wg1`, etc. The next available name is chosen on network creation:
+
+```go
+func (m *Manager) NextInterfaceName() string {
+    existing := m.db.ListInterfaceNames()  // ["wg0", "wg2"]
+    for i := 0; ; i++ {
+        name := fmt.Sprintf("wg%d", i)
+        if !contains(existing, name) {
+            return name
+        }
+    }
+}
+```
+
+### Subnet Validation
+
+On network creation, validate that the new subnet doesn't overlap with:
+- Existing WireGuard network subnets
+- The server's physical network interfaces
+- Common reserved ranges that would cause conflicts
+
+---
+
+## 12. Client Provisioning
+
+### Config Generation
+
+Client `.conf` files are generated on-demand from the database, never stored:
+
+```ini
+# Generated by wgman — {peer.Name}
+[Interface]
+PrivateKey = {peer.PrivateKey}
+Address = {peer.AllowedIPs}
+DNS = {network.DNSServers}
+
+[Peer]
+PublicKey = {network.PublicKey}
+PresharedKey = {peer.PresharedKey}  # if set
+AllowedIPs = {computed_allowed_ips}  # depends on mode
+Endpoint = {settings.PublicIP}:{network.ListenPort}
+PersistentKeepalive = {peer.PersistentKeepalive}  # if > 0
+```
+
+### Allowed IPs in Client Config (by mode)
+
+| Mode | AllowedIPs in client .conf |
+|---|---|
+| Gateway (full tunnel) | `0.0.0.0/0, ::/0` |
+| Gateway (split tunnel) | Network subnet + any custom CIDRs |
+| Site-to-site | Remote site subnets |
+| Hub-routed | Network subnet (e.g., `10.0.0.0/24`) |
+
+### QR Code
+
+Generated server-side as PNG using `go-qrcode`:
+
+```go
+func (h *Handler) PeerQR(w http.ResponseWriter, r *http.Request) {
+    conf := h.generatePeerConfig(networkID, peerID)
+    png, _ := qrcode.Encode(conf, qrcode.Medium, 256)
+    w.Header().Set("Content-Type", "image/png")
+    w.Write(png)
+}
+```
+
+Also rendered client-side via `qrcode.react` in the peer config modal for instant display.
+
+### Provisioning Endpoints
+
+```
+GET /api/networks/:id/peers/:pid/config
+    Content-Type: text/plain
+    Content-Disposition: attachment; filename="wgman-{peer.Name}.conf"
+
+GET /api/networks/:id/peers/:pid/qr
+    Content-Type: image/png
+```
+
+---
+
+## 13. First-Run Experience
+
+### Flow
+
+```
+Install Script Finishes
+    │
+    ▼
+Print: URL + one-time password
+    │
+    ▼
+User opens URL in browser
+    │
+    ▼
+App detects setup_complete=false
+    │
+    ▼
+Redirect to /setup
+    │
+    ▼
+Step 1: Create Admin Account
+    ├── Authenticate with install token
+    ├── Choose username + password
+    ├── INSERT user, DELETE install token
+    └── Issue JWT session
+    │
+    ▼
+Step 2: Server Identity
+    ├── Confirm/edit auto-detected public IP
+    ├── Optional: enter hostname → triggers ACME
+    ├── Set default DNS servers
+    └── UPDATE settings
+    │
+    ▼
+Step 3: First Network
+    ├── Name, mode, subnet, listen port
+    ├── NAT toggle
+    ├── Generate server keypair
+    ├── Create interface, assign IP, apply rules
+    └── INSERT network
+    │
+    ▼
+Step 4: First Peer
+    ├── Name, type (client/site-gateway)
+    ├── Full/split tunnel toggle
+    ├── Generate client keypair
+    ├── Add peer to kernel
+    ├── INSERT peer
+    ├── Show QR code + .conf download
+    └── SET setup_complete=true
+    │
+    ▼
+Redirect to Dashboard
+```
+
+### Edge Cases
+
+- **Browser closed mid-wizard:** Steps are idempotent. App tracks which steps are complete and resumes where the user left off.
+- **Existing WireGuard interfaces detected:** Before Step 3, show an import prompt. Import reads kernel state via wgctrl and parses existing `/etc/wireguard/*.conf` files for metadata.
+- **Port 443 occupied:** Fall back to 8443. Config file allows changing permanently.
+- **ACME fails:** Fall back to self-signed, show warning in UI. Not a blocker for setup.
+
+---
+
+## 14. Observability
+
+### Layer 1: Dashboard (Built into UI)
+
+Real-time overview on the main page after login:
+
+- **Stats cards:** Total networks, total peers, online peers, total transfer.
+- **Per-network peer table:** Name, status dot (green/gray), last handshake, transfer RX/TX.
+- **Transfer chart:** 24-hour transfer graph per network (Recharts).
+
+Data source: kernel via wgctrl (polled every 30 seconds), delivered to UI via SSE.
+
+### Layer 2: Structured Logging
+
+JSON logs to stdout, captured by journald:
+
+```json
+{"time":"...","level":"INFO","msg":"peer_handshake","network":"wg0","peer":"My Phone","endpoint":"98.42.1.100:34821"}
+{"time":"...","level":"INFO","msg":"peer_added","network":"wg0","peer":"New Laptop","admin":"admin"}
+{"time":"...","level":"WARN","msg":"peer_offline","network":"wg0","peer":"Dad's PC","last_seen":"72h"}
+{"time":"...","level":"INFO","msg":"http_request","method":"POST","path":"/api/networks/1/peers","status":201,"duration_ms":12,"user":"admin"}
+```
+
+Log levels: DEBUG, INFO, WARN, ERROR. Configurable via `config.yaml` and reloadable via SIGHUP.
+
+### Layer 3: Health & Metrics
+
+**Health endpoint** (unauthenticated):
+
+```
+GET /health → 200
+{
+    "status": "healthy",
+    "version": "1.2.0",
+    "uptime": "14d 3h 22m",
+    "networks": { "total": 2, "healthy": 2, "degraded": 0 },
+    "database": "ok"
+}
+```
+
+**Prometheus metrics** (unauthenticated, optionally gated):
+
+```
+GET /metrics
+
+wg_peers_total{network="wg0"} 9
+wg_peers_online{network="wg0"} 7
+wg_transfer_bytes_total{network="wg0",direction="rx"} 574893021
+wg_peer_last_handshake_seconds{network="wg0",peer="My Phone"} 45
+wg_interface_up{network="wg0"} 1
+wg_webui_http_requests_total{method="GET",status="200"} 14832
+```
+
+### Historical Data
+
+The monitoring poller writes snapshots to SQLite every 30 seconds. Retention policy:
+
+| Age | Granularity |
+|---|---|
+| < 24 hours | 30-second raw data |
+| 1-30 days | Hourly aggregates |
+| 30-365 days | Daily aggregates |
+| > 1 year | Deleted |
+
+Background compaction job runs daily.
+
+### Alerts
+
+Simple alert rules stored in SQLite, configured via UI:
+
+| Type | Threshold | Action |
+|---|---|---|
+| `peer_offline` | Duration (e.g., 10m) | Email |
+| `interface_down` | Immediate | Email |
+| `transfer_spike` | Rate (e.g., 1GB/hour) | Email |
+
+Email via SMTP configured in settings. No webhook/Slack/PagerDuty — users can point those tools at `/metrics` or parse JSON logs.
+
+---
+
+## 15. Install Script
+
+### One-Liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsChris/wgman/main/install.sh | sudo bash
+```
+
+Or with a custom domain:
+
+```bash
+curl -fsSL https://get.wgman.dev | sudo bash
+```
+
+### What the Script Does
+
+```
+1.  Check root
+2.  Detect architecture (amd64, arm64, arm7)
+3.  Detect OS (Ubuntu, Debian, Fedora, CentOS, Rocky, Alma)
+4.  Check kernel version for WireGuard support
+5.  Install wireguard-tools if needed (package manager)
+6.  Enable IP forwarding (sysctl)
+7.  Download latest binary from GitHub Releases
+8.  Install to /usr/local/bin/wgman
+9.  Create system user (wg-webui)
+10. Create directories (/var/lib/wg-webui, /etc/wg-webui)
+11. Generate default config.yaml
+12. Generate one-time admin password
+13. Initialize database (wgman init)
+14. Install systemd unit file
+15. Enable and start service
+16. Print URL + credentials
+```
+
+### Supported Platforms
+
+| OS | Versions |
+|---|---|
+| Ubuntu | 20.04, 22.04, 24.04 |
+| Debian | 11, 12 |
+| Fedora | 39, 40, 41 |
+| Rocky Linux | 8, 9 |
+| AlmaLinux | 8, 9 |
+| CentOS Stream | 8, 9 |
+
+### Architectures
+
+| Arch | `uname -m` | Binary suffix |
+|---|---|---|
+| x86_64 | `x86_64` | `linux_amd64` |
+| ARM64 | `aarch64` | `linux_arm64` |
+| ARMv7 | `armv7l` | `linux_arm7` |
+
+---
+
+## 16. Service Management
+
+### Systemd Unit
+
+Hardened unit file with minimal privileges:
+
+```ini
+[Unit]
+Description=WireGuard Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/wgman serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+WatchdogSec=30
+
+User=wg-webui
+Group=wg-webui
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+ReadWritePaths=/var/lib/wg-webui
+ReadOnlyPaths=/etc/wg-webui
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=true
+
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+Environment=WG_WEBUI_DATA_DIR=/var/lib/wg-webui
+Environment=WG_WEBUI_CONFIG=/etc/wg-webui/config.yaml
+Environment=WG_WEBUI_LOG_LEVEL=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Capabilities
+
+| Capability | Purpose |
+|---|---|
+| `CAP_NET_ADMIN` | Create/configure WireGuard interfaces, manage routes, nftables |
+| `CAP_NET_BIND_SERVICE` | Bind to port 443 without root |
+
+### Filesystem Layout
+
+```
+/usr/local/bin/wgman              # binary
+/etc/wg-webui/config.yaml         # static config (read-only by service)
+/var/lib/wg-webui/
+├── data.db                       # SQLite database
+├── data.db-wal                   # WAL journal
+└── certs/                        # auto-TLS certificates
+```
+
+---
+
+## 17. CLI Interface
+
+The binary serves as both the long-running service and a management CLI:
+
+```
+wgman serve                       # start the HTTP server (systemd calls this)
+wgman init                        # first-time setup: create DB, generate install token
+    --admin-pass=STRING           # set the one-time install token
+    --data-dir=PATH               # database directory
+wgman config check                # validate config.yaml
+wgman status                      # show running networks, peer count, uptime
+wgman backup                      # dump SQLite to stdout (pipe to file)
+    --output=PATH                 # write to file instead of stdout
+wgman restore <file>              # restore database from backup file
+wgman update                      # self-update from GitHub releases
+    --check                       # just check for updates, don't install
+    --version=STRING              # install specific version
+wgman version                     # print version, commit, build date
+```
+
+All CLI commands (except `serve`) are short-lived operations that either talk to the database directly or query the running API.
+
+---
+
+## 18. Configuration
+
+### Config File
+
+```yaml
+# /etc/wg-webui/config.yaml
+
+listen: 0.0.0.0:443
+
+data_dir: /var/lib/wg-webui
+
+tls:
+  mode: self-signed              # self-signed | acme | manual
+  domain: ""                     # required for acme mode
+  cert_file: ""                  # required for manual mode
+  key_file: ""                   # required for manual mode
+
+auth:
+  session_ttl: 24h
+  bcrypt_cost: 12
+
+log:
+  level: info                    # debug | info | warn | error
+  format: json                   # json | text
+```
+
+### Configuration Precedence
+
+1. CLI flags (highest priority)
+2. Environment variables (`WG_WEBUI_*`)
+3. Config file (`/etc/wg-webui/config.yaml`)
+4. Defaults (lowest priority)
+
+### Environment Variable Mapping
+
+```
+WG_WEBUI_LISTEN       → listen
+WG_WEBUI_DATA_DIR     → data_dir
+WG_WEBUI_TLS_MODE     → tls.mode
+WG_WEBUI_TLS_DOMAIN   → tls.domain
+WG_WEBUI_LOG_LEVEL    → log.level
+WG_WEBUI_LOG_FORMAT   → log.format
+```
+
+---
+
+## 19. Security Hardening
+
+### Network
+
+- HTTPS only (self-signed, ACME, or manual cert). No HTTP listener.
+- HTTP → HTTPS redirect on port 80 (optional, for ACME challenges).
+- `Strict-Transport-Security` header.
+- CORS disabled (SPA is same-origin).
+
+### Authentication
+
+- bcrypt (cost 12) for password storage.
+- JWT in httpOnly, secure, sameSite=strict cookie.
+- One-time install token for first-run auth.
+- Rate limiting on login endpoint (5 attempts per minute per IP).
+
+### API
+
+- All endpoints require authentication (except `/health`, `/metrics`, `/api/auth/login`, `/api/setup/*`).
+- CSRF protection via `SameSite=strict` cookie + `Origin` header check.
+- Input validation on all endpoints (reject unknown fields, enforce types/ranges).
+- SQL injection prevention via parameterized queries.
+- XSS prevention via React's default escaping + `Content-Security-Policy` header.
+
+### System
+
+- Dedicated system user (`wg-webui`), no shell, no home directory.
+- Minimal Linux capabilities (`CAP_NET_ADMIN`, `CAP_NET_BIND_SERVICE`).
+- Filesystem restrictions via systemd (`ProtectSystem=strict`, `ProtectHome=true`).
+- Private keys encrypted at rest in SQLite (AES-256-GCM, key derived from a master secret in config).
+- Audit log for all administrative actions.
+
+### Firewall
+
+- All nftables rules in a dedicated `wgman` table — no modification of existing rules.
+- Rules are scoped to WireGuard interfaces only.
+
+---
+
+## 20. Build & Release Pipeline
+
+### Local Build
+
+```makefile
+.PHONY: build frontend-build go-build dev dev-api clean
+
+build: frontend-build go-build
+
+frontend-build:
+	cd frontend && npm ci && npm run build
+
+go-build:
+	CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(VERSION)" -o wgman ./cmd/wgman
+
+dev:
+	cd frontend && VITE_API_PROXY=http://localhost:8080 npm run dev
+
+dev-api:
+	go run ./cmd/wgman serve --dev-mode --listen=0.0.0.0:8080
+
+clean:
+	rm -rf wgman frontend/dist
+```
+
+### GoReleaser
+
+```yaml
+# .goreleaser.yaml
+builds:
+  - binary: wgman
+    main: ./cmd/wgman
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64, arm]
+    goarm: ['7']
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+```
+
+### GitHub Actions
+
+**CI (on every PR):**
+
+```yaml
+name: CI
+on: [pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: cd frontend && npm ci && npm run lint && npm run build
+      - run: go vet ./...
+      - run: go test ./...
+```
+
+**Release (on tag push):**
+
+```yaml
+name: Release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: cd frontend && npm ci && npm run build
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+---
+
+## 21. Project Structure
+
+```
+github.com/itsChris/wgman/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── release.yml
+├── .goreleaser.yaml
+├── cmd/
+│   └── wgman/
+│       └── main.go                 # cobra CLI entrypoint
+├── internal/
+│   ├── server/
+│   │   ├── server.go               # HTTP server setup, TLS, shutdown
+│   │   ├── router.go               # route registration
+│   │   ├── middleware.go            # auth, logging, recovery
+│   │   └── handlers/
+│   │       ├── auth.go
+│   │       ├── setup.go
+│   │       ├── networks.go
+│   │       ├── peers.go
+│   │       ├── bridges.go
+│   │       ├── status.go
+│   │       ├── settings.go
+│   │       ├── alerts.go
+│   │       └── system.go
+│   ├── wg/
+│   │   ├── manager.go
+│   │   ├── device.go
+│   │   ├── iface.go
+│   │   ├── route.go
+│   │   ├── keys.go
+│   │   └── reconcile.go
+│   ├── nft/
+│   │   ├── manager.go
+│   │   └── rules.go
+│   ├── db/
+│   │   ├── db.go
+│   │   ├── networks.go
+│   │   ├── peers.go
+│   │   ├── bridges.go
+│   │   ├── settings.go
+│   │   ├── users.go
+│   │   ├── snapshots.go
+│   │   ├── audit.go
+│   │   ├── alerts.go
+│   │   └── migrations/
+│   │       └── 001_initial.sql
+│   ├── auth/
+│   │   ├── jwt.go
+│   │   ├── password.go
+│   │   └── session.go
+│   ├── config/
+│   │   ├── config.go
+│   │   └── defaults.go
+│   ├── monitor/
+│   │   ├── poller.go
+│   │   ├── snapshots.go
+│   │   ├── alerts.go
+│   │   └── metrics.go
+│   ├── tls/
+│   │   ├── acme.go
+│   │   ├── selfsigned.go
+│   │   └── manager.go
+│   └── updater/
+│       └── updater.go
+├── frontend/
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── api/
+│   │   │   ├── client.ts
+│   │   │   ├── networks.ts
+│   │   │   ├── peers.ts
+│   │   │   └── status.ts
+│   │   ├── components/
+│   │   │   ├── ui/                  # shadcn components
+│   │   │   ├── layout/
+│   │   │   │   ├── app-shell.tsx
+│   │   │   │   └── nav.tsx
+│   │   │   ├── networks/
+│   │   │   │   ├── network-card.tsx
+│   │   │   │   ├── network-form.tsx
+│   │   │   │   └── network-list.tsx
+│   │   │   ├── peers/
+│   │   │   │   ├── peer-table.tsx
+│   │   │   │   ├── peer-form.tsx
+│   │   │   │   ├── peer-config-modal.tsx
+│   │   │   │   └── peer-qr.tsx
+│   │   │   ├── dashboard/
+│   │   │   │   ├── stats-cards.tsx
+│   │   │   │   ├── transfer-chart.tsx
+│   │   │   │   └── peer-status-list.tsx
+│   │   │   └── setup/
+│   │   │       ├── wizard.tsx
+│   │   │       ├── step-admin.tsx
+│   │   │       ├── step-server.tsx
+│   │   │       ├── step-network.tsx
+│   │   │       └── step-peer.tsx
+│   │   ├── hooks/
+│   │   │   ├── use-sse.ts
+│   │   │   └── use-auth.ts
+│   │   ├── lib/
+│   │   │   └── utils.ts
+│   │   └── types/
+│   │       └── api.ts
+│   ├── index.html
+│   ├── tailwind.config.js
+│   ├── vite.config.ts
+│   ├── tsconfig.json
+│   └── package.json
+├── install.sh
+├── go.mod
+├── go.sum
+├── Makefile
+├── LICENSE                          # MIT
+├── README.md
+└── SPEC.md                          # this document
+```
+
+---
+
+## 22. Development Workflow
+
+### Prerequisites
+
+- Go 1.23+
+- Node.js 20+
+- Linux (for WireGuard kernel access) or develop API-only on macOS/Windows
+
+### Dev Mode
+
+Two terminals:
+
+```bash
+# Terminal 1: Vite dev server with HMR
+make dev
+
+# Terminal 2: Go backend (serves API on :8080, no embedded frontend)
+make dev-api
+```
+
+Vite proxies `/api/*` to the Go backend. Frontend hot-reloads instantly. Backend restarts manually or via `air`/`watchexec`.
+
+```typescript
+// vite.config.ts
+export default defineConfig({
+    plugins: [react()],
+    server: {
+        proxy: {
+            '/api': process.env.VITE_API_PROXY ?? 'http://localhost:8080',
+        },
+    },
+});
+```
+
+### Testing
+
+- **Go:** `go test ./...` — unit tests for all packages. Integration tests for WG manager require Linux + root (run in CI with elevated permissions).
+- **Frontend:** `npm test` — component tests with Vitest + React Testing Library.
+- **E2E:** Future consideration — Playwright against a running instance.
+
+### Code Quality
+
+- **Go:** `go vet`, `staticcheck`, `golangci-lint`
+- **Frontend:** ESLint, Prettier, TypeScript strict mode
+
+---
+
+## 23. Versioning & Roadmap
+
+### Versioning
+
+Semantic versioning. Stay below v1.0.0 until API surface and data model are stable.
+
+### Roadmap
+
+| Version | Scope |
+|---|---|
+| v0.1.0 | Install script + Go backend + API + basic UI + VPN gateway mode |
+| v0.2.0 | Site-to-site support |
+| v0.3.0 | Hub with peer routing |
+| v0.4.0 | Multi-network + network bridging |
+| v0.5.0 | Import existing WireGuard configs |
+| v0.6.0 | Dashboard with live stats + transfer charts |
+| v0.7.0 | Alerts + audit log |
+| v0.8.0 | Self-update mechanism |
+| v0.9.0 | Prometheus metrics + health endpoint |
+| v1.0.0 | Stable, production-ready |
+
+---
+
+## Appendix A: Wire Formats
+
+### Create Network Request
+
+```json
+POST /api/networks
+{
+    "name": "Home VPN",
+    "mode": "gateway",
+    "subnet": "10.0.0.0/24",
+    "listen_port": 51820,
+    "dns_servers": "1.1.1.1,8.8.8.8",
+    "nat_enabled": true,
+    "inter_peer_routing": false
+}
+```
+
+### Create Network Response
+
+```json
+201 Created
+{
+    "id": 1,
+    "name": "Home VPN",
+    "interface": "wg0",
+    "mode": "gateway",
+    "subnet": "10.0.0.0/24",
+    "listen_port": 51820,
+    "public_key": "abc123...",
+    "dns_servers": "1.1.1.1,8.8.8.8",
+    "nat_enabled": true,
+    "inter_peer_routing": false,
+    "enabled": true,
+    "created_at": 1739000000,
+    "updated_at": 1739000000
+}
+```
+
+### Create Peer Request
+
+```json
+POST /api/networks/1/peers
+{
+    "name": "My Phone",
+    "email": "chris@example.com",
+    "role": "client",
+    "persistent_keepalive": 25
+}
+```
+
+### Create Peer Response
+
+```json
+201 Created
+{
+    "id": 1,
+    "network_id": 1,
+    "name": "My Phone",
+    "email": "chris@example.com",
+    "public_key": "xyz789...",
+    "allowed_ips": "10.0.0.2/32",
+    "endpoint": "",
+    "persistent_keepalive": 25,
+    "role": "client",
+    "site_networks": "",
+    "enabled": true,
+    "created_at": 1739000000,
+    "updated_at": 1739000000
+}
+```
+
+### Peer Config (.conf)
+
+```ini
+[Interface]
+PrivateKey = <client-private-key>
+Address = 10.0.0.2/32
+DNS = 1.1.1.1,8.8.8.8
+
+[Peer]
+PublicKey = <server-public-key>
+PresharedKey = <preshared-key>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 203.0.113.45:51820
+PersistentKeepalive = 25
+```
+
+### Status Response
+
+```json
+GET /api/status
+{
+    "networks": [
+        {
+            "id": 1,
+            "name": "Home VPN",
+            "interface": "wg0",
+            "enabled": true,
+            "up": true,
+            "listen_port": 51820,
+            "peers": [
+                {
+                    "id": 1,
+                    "name": "My Phone",
+                    "public_key": "xyz789...",
+                    "endpoint": "98.42.1.100:34821",
+                    "last_handshake": 1739000045,
+                    "transfer_rx": 574893021,
+                    "transfer_tx": 335102847,
+                    "online": true
+                }
+            ]
+        }
+    ]
+}
+```
+
+---
+
+## Appendix B: Key Decisions Log
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Language | Go | Single binary, no runtime deps, wgctrl-go ecosystem |
+| Frontend | React + shadcn/ui | Best component library for management UIs |
+| Database | SQLite (pure Go) | Zero config, file-based, no CGO |
+| WG management | wgctrl-go + netlink | No shell-outs, direct kernel control |
+| Firewall | google/nftables | Programmatic, dedicated table avoids conflicts |
+| TLS | Built-in autocert | No nginx/Caddy dependency |
+| Service | systemd | Standard Linux, hardened unit file |
+| Auth | bcrypt + JWT cookie | Simple, secure, no external auth deps |
+| Distribution | GoReleaser + GitHub Releases | Automated cross-compilation |
+| Config storage | SQLite (runtime) + YAML (static) | DB for dynamic config, file for deployment config |
+| Logging | slog (stdlib) | Structured JSON, no external dependency |
+| Metrics | Prometheus exposition | Industry standard, optional for users |
+| Live updates | SSE | Simpler than WebSocket for one-directional data |
+| Private key storage | Encrypted at rest (AES-256-GCM) | Defense in depth |
+| Naming | wgman | Short, memorable, available |
+| License | MIT | Standard for WG ecosystem |
